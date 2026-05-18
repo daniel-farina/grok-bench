@@ -72,6 +72,19 @@ function fmtNum(n) {
   if (Math.abs(n) >= 1_000) return (n / 1_000).toFixed(1) + 'k';
   return Math.round(n).toLocaleString();
 }
+function shortNum(v) {
+  const n = (typeof v === 'string') ? parseInt(v, 10) : v;
+  if (!Number.isFinite(n)) return String(v);
+  if (n >= 1024) return Math.round(n / 1024) + 'k';
+  return String(n);
+}
+function fmtSignedDelta(n) {
+  if (!Number.isFinite(n) || n === 0) return '';
+  const sign = n > 0 ? '+' : '−';
+  const abs = Math.abs(n);
+  const s = abs >= 1000 ? (abs / 1000).toFixed(1) + 'k' : String(abs);
+  return sign + s;
+}
 function fmtAgo(epochMs) {
   if (!epochMs) return '-';
   const diff = (Date.now() - epochMs) / 1000;
@@ -194,6 +207,7 @@ function renderTotals(rows) {
       <div class="tile-big">${t.big}</div>
       <div class="tile-sub">${t.sub}</div>
     </div>`).join('');
+
 }
 
 async function loadRuns() {
@@ -213,7 +227,7 @@ async function loadRuns() {
     table = document.createElement('table');
     table.className = 'runs-table';
     table.innerHTML = `<thead><tr>
-      <th></th><th title="star this run"></th><th>Tag</th><th>T</th><th>mt</th><th>Lines</th><th>Calls</th><th title="sum input tokens">In</th><th title="sum cached input tokens">Cache</th><th title="sum output tokens">Out</th><th title="sum reasoning tokens">Reas</th><th title="sum total tokens">Total</th><th title="sum cost (USD)">$</th><th>Status</th><th>When</th><th></th>
+      <th></th><th title="star this run"></th><th>Tag</th><th title="sum cost (USD)">$</th><th>Status</th><th>When</th><th></th>
     </tr></thead><tbody></tbody>`;
     container.innerHTML = '';
     container.appendChild(table);
@@ -270,11 +284,14 @@ async function loadRuns() {
 function updateRowCells(tr, r) {
   const starred = starredRuns.has(r._folder);
   // Fingerprint to skip identical re-renders (prevents flicker)
+  const snap = r.settings_snapshot || {};
   const fp = JSON.stringify([
     r._status, r.exit_code, r.has_index,
     r.index_lines, r.api_calls, r.estimated_billed_tokens,
     r._mtime, r.prompt_variant, r.system_prompt,
     r.temperature, r.max_completion_tokens, r.max_turns,
+    snap.effort, snap.strip_reminders, snap.use_proxy,
+    snap.custom_prompt_active, snap.custom_prompt_length,
     !!expansionState.get(r._folder),
     starred,
   ]);
@@ -297,63 +314,103 @@ function updateRowCells(tr, r) {
 
   const costUsd = (r.cost_ticks != null) ? (r.cost_ticks / 1e9) : null;
   const fullPath = r._full_path || r._folder || '';
+  // System-prompt indicator chip: "default" (gray) or "custom -2.3k" (teal w/ delta)
+  const isCustom = (r.system_prompt && r.system_prompt !== 'default') || snap.custom_prompt_active === true;
+  const customLen = snap.custom_prompt_length || 0;
+  const defaultLen = 12367; // grok 0.1.211 default; shipped reference
+  const sysChip = isCustom
+    ? `<span class="rs-chip rs-custom" title="proxy replaced grok's 12K default with a ${customLen}-char custom prompt">custom${customLen ? ` ${fmtSignedDelta(customLen - defaultLen)}` : ''}</span>`
+    : `<span class="rs-chip rs-default" title="full grok default 12K system prompt">default</span>`;
+  // Settings chips
+  const settingsChips = [sysChip];
+  if (r.temperature != null) settingsChips.push(`<span class="rs-chip" title="temperature">t=${r.temperature}</span>`);
+  if (r.max_completion_tokens != null) settingsChips.push(`<span class="rs-chip" title="max_completion_tokens">max=${shortNum(r.max_completion_tokens)}</span>`);
+  if (r.max_turns != null) settingsChips.push(`<span class="rs-chip" title="max_turns">turns=${r.max_turns}</span>`);
+  if (snap.effort != null) settingsChips.push(`<span class="rs-chip" title="--reasoning-effort">effort=${snap.effort}</span>`);
+  if (snap.strip_reminders != null) settingsChips.push(`<span class="rs-chip ${snap.strip_reminders ? 'rs-on' : 'rs-off'}" title="strip &lt;system-reminder&gt; (skill catalog)">strip ${snap.strip_reminders ? '✓' : '✗'}</span>`);
+  if (snap.use_proxy != null) settingsChips.push(`<span class="rs-chip ${snap.use_proxy ? 'rs-on' : 'rs-off'}" title="route through rewriting proxy">proxy ${snap.use_proxy ? '✓' : '✗'}</span>`);
+
+  // Metric chips (moved from table columns to free up horizontal space)
+  const cachePct = r.input_tokens ? Math.round((r.cached_tokens || 0) * 100 / r.input_tokens) : null;
+  const reasPct  = r.output_tokens ? Math.round((r.reasoning_tokens || 0) * 100 / r.output_tokens) : null;
+  const metricChips = [];
+  if (r.api_calls != null) metricChips.push(`<span class="rs-chip rs-metric" title="API calls">${fmtNum(r.api_calls)} calls</span>`);
+  if (r.tool_call_count != null) metricChips.push(`<span class="rs-chip rs-metric" title="function_call events">${fmtNum(r.tool_call_count)} tools</span>`);
+  if (r.index_lines) metricChips.push(`<span class="rs-chip rs-metric" title="lines of generated output">${fmtNum(r.index_lines)} lines</span>`);
+  if (r.input_tokens != null) metricChips.push(`<span class="rs-chip rs-metric" title="input tokens · cached%">in ${fmtNum(r.input_tokens)}${cachePct != null ? ` <span class="muted">(${cachePct}% cache)</span>` : ''}</span>`);
+  if (r.output_tokens != null) metricChips.push(`<span class="rs-chip rs-metric" title="output tokens · reasoning%">out ${fmtNum(r.output_tokens)}${reasPct != null ? ` <span class="muted">(${reasPct}% reas)</span>` : ''}</span>`);
+  if (r.total_tokens != null) metricChips.push(`<span class="rs-chip rs-metric" title="sum of input + output tokens">total ${fmtNum(r.total_tokens)}</span>`);
+
   const tagCell = `
     <div class="tag-stack">
-      <div>
+      <div class="tag-name">
         <code title="${escapeHtml(r.system_prompt || 'default')} · t=${r.temperature} · max=${r.max_completion_tokens}">${escapeHtml(r.tag || r._folder)}</code>
-        <button class="reveal-btn" data-action="reveal" data-tag="${r._folder}" title="open this folder in Finder">📂</button>
       </div>
-      <div class="tag-path" title="${escapeHtml(fullPath)}">${escapeHtml(fullPath)}</div>
+      <div class="tag-path-row">
+        <button class="reveal-btn" data-action="reveal" data-tag="${r._folder}" title="open this folder in Finder">📂</button>
+        <span class="tag-path" title="${escapeHtml(fullPath)}">${escapeHtml(fullPath)}</span>
+      </div>
+      <div class="tag-settings">${settingsChips.join('')}</div>
+      <div class="tag-metrics">${metricChips.join('')}</div>
     </div>`;
   tr.innerHTML = `
     <td><span class="chev">&#x25B8;</span></td>
     <td>${starBtn}</td>
     <td>${tagCell}</td>
-    <td>${r.temperature ?? '-'}</td>
-    <td>${r.max_turns ?? '-'}</td>
-    <td>${fmtNum(r.index_lines || 0)}</td>
-    <td>${fmtNum(r.api_calls || 0)}</td>
-    <td>${fmtNum(r.input_tokens || 0)}</td>
-    <td class="muted">${fmtNum(r.cached_tokens || 0)}</td>
-    <td>${fmtNum(r.output_tokens || 0)}</td>
-    <td class="muted">${fmtNum(r.reasoning_tokens || 0)}</td>
-    <td>${fmtNum(r.total_tokens || 0)}</td>
-    <td>${costUsd != null ? '$' + costUsd.toFixed(4) : '-'}</td>
+    <td class="cost-col">${costUsd != null ? '$' + costUsd.toFixed(4) : '-'}</td>
     <td class="${statusClass}">${status}</td>
     <td class="muted">${fmtAgo(r._mtime)}</td>
     <td><div class="row-actions">
-      <button class="btn secondary" data-action="log" data-tag="${r._folder}">log</button>
-      <button class="btn secondary" data-action="captures" data-tag="${r._folder}">caps</button>
+      <button class="btn secondary" data-action="log" data-tag="${r._folder}" title="view run.log">log</button>
+      <button class="btn secondary" data-action="captures" data-tag="${r._folder}" title="view captures">caps</button>
       ${play}
     </div></td>`;
 }
 
-// Delegated click handler — attached once, never torn down
+// Delegated click handler — attached once, never torn down.
+// Handles three things:
+//   1. clicks on `button[data-action]` (star/reveal/log/captures)
+//   2. clicks on links (`play`, `view`, etc.) — let those bubble naturally
+//   3. clicks anywhere else inside a row → toggle the expansion (default tab: metrics)
 function onRunsClick(ev) {
+  // Let real links work — never hijack them
+  if (ev.target.closest('a')) return;
   const btn = ev.target.closest('button[data-action]');
-  if (!btn) return;
-  ev.stopPropagation();
-  const tag = btn.dataset.tag;
-  const action = btn.dataset.action;
-  // Star button has its own behavior — not log/captures
-  if (action === 'star') {
-    toggleStar(tag);
+  if (btn) {
+    ev.stopPropagation();
+    const tag = btn.dataset.tag;
+    const action = btn.dataset.action;
+    if (action === 'star') { toggleStar(tag); return; }
+    if (action === 'reveal') { fetch(`/api/run/${tag}/reveal`, { method: 'POST' }).catch(() => {}); return; }
+    const cur = expansionState.get(tag);
+    const row = findRowTr(tag);
+    if (cur === action) {
+      expansionState.delete(tag);
+      collapsePanel(tag);
+      if (row) row.classList.remove('row-expanded');
+    } else {
+      expansionState.set(tag, action);
+      expandPanel(tag, action);
+      if (row) row.classList.add('row-expanded');
+    }
     return;
   }
-  if (action === 'reveal') {
-    fetch(`/api/run/${tag}/reveal`, { method: 'POST' }).catch(() => {});
-    return;
-  }
+  // Otherwise: row-level click toggles expansion (default tab: metrics)
+  const row = ev.target.closest('tr.row[data-folder]');
+  if (!row) return;
+  // Don't react when clicking inside the expanded panel itself
+  if (ev.target.closest('tr.expanded-row')) return;
+  const tag = row.dataset.folder;
   const cur = expansionState.get(tag);
-  const row = findRowTr(tag);
-  if (cur === action) {
+  if (cur) {
     expansionState.delete(tag);
     collapsePanel(tag);
-    if (row) row.classList.remove('row-expanded');
+    row.classList.remove('row-expanded');
   } else {
-    expansionState.set(tag, action);
-    expandPanel(tag, action);
-    if (row) row.classList.add('row-expanded');
+    const def = 'metrics';
+    expansionState.set(tag, def);
+    expandPanel(tag, def);
+    row.classList.add('row-expanded');
   }
 }
 
@@ -361,6 +418,321 @@ function collapsePanel(tag) {
   clearPanelPoller(tag);
   const exp = findExpandedTr(tag);
   if (exp) exp.remove();
+}
+
+// ---- Per-run metrics view (new) ----
+async function renderMetricsInto(folder, container) {
+  try {
+    const [runsR, capsR] = await Promise.all([
+      fetch('/api/runs'),
+      fetch(`/api/run/${folder}/captures`),
+    ]);
+    const all = await runsR.json();
+    const caps = await capsR.json();
+    const run = all.find(x => x._folder === folder) || {};
+    if (!caps.length) {
+      container.innerHTML = '<div class="run-panel-empty">No captures yet — run hasn\'t produced API calls (proxy may be off, or run just started).</div>';
+      return;
+    }
+    container.innerHTML = '';
+    container.appendChild(renderMetricsSummary(run, caps));
+    container.appendChild(renderMetricsTimeline(caps));
+    container.appendChild(renderMetricsTokens(caps));
+    container.appendChild(renderMetricsToolPie(caps));
+    container.appendChild(renderMetricsCumCost(caps));
+    container.appendChild(renderMetricsCacheHit(caps));
+  } catch (e) {
+    container.innerHTML = `<span style="color:var(--bad)">${e.message}</span>`;
+  }
+}
+
+function metricsSection(title, hint = '') {
+  const sec = document.createElement('div');
+  sec.className = 'mx-section';
+  sec.innerHTML = `<div class="mx-section-head"><h4>${title}</h4>${hint ? `<span class="muted">${hint}</span>` : ''}</div>`;
+  return sec;
+}
+
+function renderMetricsSummary(run, caps) {
+  // Roll up everything we know
+  const totals = caps.reduce((a, c) => {
+    a.elapsed += (c.elapsed_ms || 0);
+    a.input   += (c.tokens_input || 0);
+    a.cached  += (c.tokens_cached || 0);
+    a.output  += (c.tokens_output || 0);
+    a.reasoning += (c.tokens_reasoning || 0);
+    a.total   += (c.tokens_total || 0);
+    a.cost    += (c.cost_usd || 0);
+    a.tools   += (c.tool_calls_count || 0);
+    a.events  += (c.events_count || 0);
+    return a;
+  }, { elapsed:0, input:0, cached:0, output:0, reasoning:0, total:0, cost:0, tools:0, events:0 });
+
+  // Wall-clock duration (start of first → end of last)
+  const tsStart = caps[0]?.ts ? caps[0].ts * 1000 : null;
+  const tsEnd   = (caps[caps.length-1]?.ts ? caps[caps.length-1].ts * 1000 : null)
+                  + (caps[caps.length-1]?.elapsed_ms || 0);
+  const wallSec = (tsStart && tsEnd && tsEnd > tsStart) ? Math.round((tsEnd - tsStart) / 1000) : null;
+  const apiSec  = totals.elapsed / 1000;
+  const cacheRate = totals.input ? (totals.cached / totals.input * 100) : 0;
+  const reasoningRate = totals.output ? (totals.reasoning / totals.output * 100) : 0;
+
+  const tiles = [
+    { label: 'API calls',     big: caps.length },
+    { label: 'tool calls',    big: totals.tools, sub: 'function_call events' },
+    { label: 'wall time',     big: wallSec != null ? fmtDuration(wallSec) : '-', sub: 'first → last capture' },
+    { label: 'API time',      big: fmtDuration(apiSec), sub: `${Math.round(apiSec/caps.length)}s avg/call` },
+    { label: 'total tokens',  big: fmtNum(totals.total),  sub: `in ${fmtNum(totals.input)} · out ${fmtNum(totals.output)}` },
+    { label: 'cache rate',    big: cacheRate.toFixed(0) + '%', sub: `${fmtNum(totals.cached)} cached` },
+    { label: 'reasoning %',   big: reasoningRate.toFixed(0) + '%', sub: `${fmtNum(totals.reasoning)} of ${fmtNum(totals.output)} out` },
+    { label: 'cost',          big: '$' + totals.cost.toFixed(4), sub: `$${(totals.cost/caps.length).toFixed(4)} avg/call` },
+  ];
+
+  const wrap = document.createElement('div');
+  wrap.className = 'mx-summary';
+  wrap.innerHTML = tiles.map(t => `
+    <div class="mx-tile">
+      <div class="mx-tile-label">${t.label}</div>
+      <div class="mx-tile-big">${t.big}</div>
+      ${t.sub ? `<div class="mx-tile-sub">${t.sub}</div>` : ''}
+    </div>`).join('');
+  return wrap;
+}
+
+function fmtDuration(sec) {
+  if (!Number.isFinite(sec)) return '-';
+  sec = Math.round(sec);
+  if (sec < 60) return sec + 's';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+// Color for a tool name — stable hash → HSL.
+// Lightness ~48% gives enough contrast for white text on all hues.
+function colorForTool(name) {
+  if (!name) return 'var(--dim)';
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  const hue = Math.abs(h) % 360;
+  return `hsl(${hue}, 55%, 48%)`;
+}
+
+// Timeline: each capture as a horizontal bar on a time axis. Width = elapsed_ms.
+// Plain HTML/CSS implementation: each row is a div with a track + bar positioned
+// via percentages, so it's fully responsive and scales with the container width
+// no matter how many captures there are.
+function renderMetricsTimeline(caps) {
+  const sec = metricsSection('Timeline', 'each API call positioned by start time · width = duration');
+  const start = caps[0]?.ts * 1000 || 0;
+  const end   = Math.max(...caps.map(c => (c.ts*1000) + (c.elapsed_ms || 0)));
+  const span  = Math.max(1, end - start);
+  const totalSec = span / 1000;
+
+  // Axis ticks (5 evenly spaced)
+  const tickFracs = [0, 0.25, 0.5, 0.75, 1];
+
+  const rowsHtml = caps.map((c, i) => {
+    const leftPct  = ((c.ts*1000 - start) / span) * 100;
+    const rawPct   = ((c.elapsed_ms || 0) / span) * 100;
+    const name = (c.tool_calls_names && c.tool_calls_names[0]) || (c.output_chars ? 'output_text' : '?');
+    const col = colorForTool(name);
+    const dur = fmtDurationMs(c.elapsed_ms || 0);
+    const tip = `#${i+1} ${name} · ${dur} · in:${c.tokens_input||0} out:${c.tokens_output||0} · $${(c.cost_usd||0).toFixed(4)}`;
+
+    // Wide bars get an inline label; narrow bars get the label hanging to the right.
+    // 6% of track width is the threshold (works at any container width).
+    const wide = rawPct >= 6;
+    const insideLabel = wide
+      ? `<span class="tl-bar-label">${escapeHtml(name)} <span class="tl-bar-dur">${dur}</span></span>`
+      : '';
+    const outsideLabel = !wide
+      ? `<div class="tl-outside" style="left: calc(${leftPct.toFixed(3)}% + ${Math.max(rawPct, 0).toFixed(3)}% + 8px);">${escapeHtml(name)} <span class="tl-outside-dur">${dur}</span></div>`
+      : '';
+
+    return `
+      <div class="tl-row">
+        <div class="tl-index">#${i+1}</div>
+        <div class="tl-track" title="${escapeHtml(tip)}">
+          <div class="tl-bar" style="left: ${leftPct.toFixed(3)}%; width: ${rawPct.toFixed(3)}%; background: ${col};">${insideLabel}</div>
+          ${outsideLabel}
+        </div>
+      </div>`;
+  }).join('');
+
+  const tickLines = tickFracs.map(f =>
+    `<div class="tl-guide" style="left: ${(f * 100).toFixed(3)}%;"></div>`
+  ).join('');
+  const tickLabels = tickFracs.map((f, i) => {
+    const pos = (f * 100).toFixed(3);
+    const cls = i === 0 ? 'tl-tick-start' : i === tickFracs.length - 1 ? 'tl-tick-end' : 'tl-tick-mid';
+    return `<div class="tl-tick ${cls}" style="left: ${pos}%;">${fmtDuration(totalSec * f)}</div>`;
+  }).join('');
+
+  const body = document.createElement('div');
+  body.className = 'mx-chart tl-wrap';
+  body.innerHTML = `
+    <div class="tl-rows">
+      <div class="tl-guides">${tickLines}</div>
+      ${rowsHtml}
+    </div>
+    <div class="tl-axis">
+      <div class="tl-index"></div>
+      <div class="tl-track tl-track-axis">${tickLabels}</div>
+    </div>`;
+  sec.appendChild(body);
+  return sec;
+}
+
+function fmtDurationMs(ms) {
+  if (!Number.isFinite(ms)) return '-';
+  if (ms < 1000) return ms + 'ms';
+  return (ms / 1000).toFixed(1) + 's';
+}
+
+// Stacked tokens per call: cached + (input-cached) + reasoning + (output-reasoning)
+function renderMetricsTokens(caps) {
+  const sec = metricsSection('Tokens per call', 'cached | input | reasoning | visible-output');
+  const W = 1000, padL = 6, padR = 6, padT = 6, padB = 16, H = 160;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const n = caps.length;
+  const bw = Math.max(2, innerW / n - 1);
+  const max = Math.max(1, ...caps.map(c => (c.tokens_input||0) + (c.tokens_output||0)));
+  const COLORS = {
+    cached: '#3a4a5a',
+    input: 'var(--accent-2)',
+    reasoning: '#a78bfa',
+    output: 'var(--good)',
+  };
+  const rects = caps.map((c, i) => {
+    const x = padL + i * (innerW / n);
+    const cached = c.tokens_cached || 0;
+    const inputUncached = Math.max(0, (c.tokens_input || 0) - cached);
+    const reasoning = c.tokens_reasoning || 0;
+    const outputVisible = Math.max(0, (c.tokens_output || 0) - reasoning);
+    let yCursor = padT + innerH;
+    const segs = [
+      { val: cached, color: COLORS.cached, label: 'cached' },
+      { val: inputUncached, color: COLORS.input, label: 'input' },
+      { val: reasoning, color: COLORS.reasoning, label: 'reasoning' },
+      { val: outputVisible, color: COLORS.output, label: 'output' },
+    ];
+    const parts = segs.map(s => {
+      if (s.val <= 0) return '';
+      const h = (s.val / max) * innerH;
+      yCursor -= h;
+      return `<rect x="${x.toFixed(1)}" y="${yCursor.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${s.color}"><title>#${i+1} ${s.label}: ${s.val}</title></rect>`;
+    }).join('');
+    return parts;
+  }).join('');
+  const body = document.createElement('div');
+  body.className = 'mx-chart';
+  body.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%; height:160px;">
+      <line x1="${padL}" x2="${W-padR}" y1="${H-padB}" y2="${H-padB}" stroke="var(--border)" stroke-width="0.5"/>
+      ${rects}
+    </svg>
+    <div class="mx-legend">
+      <span><span class="mx-swatch" style="background:#3a4a5a;"></span>cached</span>
+      <span><span class="mx-swatch" style="background:var(--accent-2);"></span>input (uncached)</span>
+      <span><span class="mx-swatch" style="background:#a78bfa;"></span>reasoning</span>
+      <span><span class="mx-swatch" style="background:var(--good);"></span>visible output</span>
+    </div>
+  `;
+  sec.appendChild(body);
+  return sec;
+}
+
+// Tool call distribution — horizontal bars
+function renderMetricsToolPie(caps) {
+  const counts = {};
+  for (const c of caps) {
+    for (const name of (c.tool_calls_names || [])) {
+      counts[name] = (counts[name] || 0) + 1;
+    }
+  }
+  const sec = metricsSection('Tools called', 'function_call by name');
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) {
+    sec.appendChild(Object.assign(document.createElement('div'), {
+      innerHTML: '<div class="run-panel-empty">no tool calls in this run</div>',
+    }));
+    return sec;
+  }
+  const max = entries[0][1];
+  const body = document.createElement('div');
+  body.className = 'mx-bars';
+  body.innerHTML = entries.map(([name, n]) => `
+    <div class="mx-bar-row">
+      <span class="mx-bar-label">${escapeHtml(name)}</span>
+      <div class="mx-bar-track">
+        <div class="mx-bar-fill" style="width:${(n*100/max).toFixed(1)}%; background:${colorForTool(name)};"></div>
+      </div>
+      <span class="mx-bar-val">${n}</span>
+    </div>
+  `).join('');
+  sec.appendChild(body);
+  return sec;
+}
+
+// Cumulative cost (USD) line chart
+function renderMetricsCumCost(caps) {
+  const sec = metricsSection('Cumulative cost', 'USD accumulated as the run progresses');
+  const W = 1000, padL = 8, padR = 8, padT = 8, padB = 18, H = 130;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  let cum = 0;
+  const points = caps.map((c, i) => {
+    cum += (c.cost_usd || 0);
+    return { x: padL + (i / Math.max(1, caps.length - 1)) * innerW, v: cum };
+  });
+  const maxCum = Math.max(1e-9, points[points.length - 1].v);
+  const path = points.map((p, i) => {
+    const y = padT + innerH - (p.v / maxCum) * innerH;
+    return `${i ? 'L' : 'M'}${p.x.toFixed(1)} ${y.toFixed(1)}`;
+  }).join(' ');
+  const body = document.createElement('div');
+  body.className = 'mx-chart';
+  body.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%; height:130px;">
+      <line x1="${padL}" x2="${W-padR}" y1="${H-padB}" y2="${H-padB}" stroke="var(--border)" stroke-width="0.5"/>
+      <path d="${path}" stroke="var(--warn)" stroke-width="2" fill="none"/>
+      <text x="${padL}" y="14" fill="var(--text-muted)" font-size="10" font-family="var(--mono)">$0</text>
+      <text x="${W-padR}" y="14" fill="var(--text-muted)" font-size="10" font-family="var(--mono)" text-anchor="end">$${maxCum.toFixed(4)}</text>
+    </svg>
+  `;
+  sec.appendChild(body);
+  return sec;
+}
+
+// Cache hit rate per call
+function renderMetricsCacheHit(caps) {
+  const sec = metricsSection('Cache hit rate per call', '% of input tokens served from prompt cache (higher = cheaper)');
+  const W = 1000, padL = 8, padR = 8, padT = 8, padB = 18, H = 110;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const n = caps.length;
+  const bw = Math.max(2, innerW / n - 1);
+  const bars = caps.map((c, i) => {
+    const rate = (c.tokens_input ? (c.tokens_cached || 0) / c.tokens_input : 0);
+    const x = padL + i * (innerW / n);
+    const h = rate * innerH;
+    const y = padT + innerH - h;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="var(--accent-2)" opacity="0.8"><title>#${i+1}: ${(rate*100).toFixed(1)}%</title></rect>`;
+  }).join('');
+  const body = document.createElement('div');
+  body.className = 'mx-chart';
+  body.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%; height:110px;">
+      <line x1="${padL}" x2="${W-padR}" y1="${H-padB}" y2="${H-padB}" stroke="var(--border)" stroke-width="0.5"/>
+      <line x1="${padL}" x2="${W-padR}" y1="${padT}" y2="${padT}" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="2,4"/>
+      <text x="${padL}" y="14" fill="var(--text-muted)" font-size="10" font-family="var(--mono)">100%</text>
+      <text x="${padL}" y="${H-padB-2}" fill="var(--text-muted)" font-size="10" font-family="var(--mono)">0%</text>
+      ${bars}
+    </svg>
+  `;
+  sec.appendChild(body);
+  return sec;
 }
 
 async function renderFilesPanel(tag, body) {
@@ -416,11 +788,12 @@ function expandPanel(tag, action) {
     exp.className = 'expanded-row';
     exp.dataset.folder = tag;
     const td = document.createElement('td');
-    td.colSpan = 16;
+    td.colSpan = 7;
     const panel = document.createElement('div');
     panel.className = 'run-panel';
     panel.innerHTML = `
       <div class="run-panel-tabs">
+        <button data-tab="metrics">metrics</button>
         <button data-tab="log">run.log</button>
         <button data-tab="captures">captures</button>
         <button data-tab="settings">settings</button>
@@ -497,6 +870,17 @@ function renderPanel(tag, action) {
       }
       refreshLogInto(tag, content);
     }, 3000));
+  } else if (action === 'metrics') {
+    content.classList.add('captures-body');
+    renderMetricsInto(tag, content);
+    // Live refresh metrics every 4s while open
+    panelPollers.set(tag, setInterval(() => {
+      if (!findExpandedTr(tag) || expansionState.get(tag) !== 'metrics') {
+        clearPanelPoller(tag);
+        return;
+      }
+      renderMetricsInto(tag, content);
+    }, 4000));
   } else if (action === 'captures') {
     content.classList.add('captures-body');
     renderCapturesInto(tag, content);
@@ -1093,54 +1477,566 @@ $('sections-none-btn').onclick = () => {
 
 $('run-btn').onclick = startRun;
 $('save-btn').onclick = saveState;
+
+// "Use Grok's defaults" — reset all generation/proxy knobs to grok's stock behavior.
+async function useGrokDefaults() {
+  if (!confirm('Reset all settings to grok defaults? (t=0.6, max_tokens unset, turns=60, effort off, proxy + strip off)')) return;
+  $('temperature').value = '0.6';
+  $('max-tokens').value = 'default';
+  $('max-turns').value = '60';
+  $('effort').value = 'off';
+  $('use-proxy').checked = false;
+  $('strip-reminders').checked = false;
+  await saveState();
+}
+
+// "Use Grok's default prompt" — clear the custom prompt + turn off the proxy override
+// so grok's built-in 12K system prompt is used unchanged.
+async function useGrokDefaultPrompt() {
+  if (!confirm('Disable the custom system prompt? (grok will use its built-in 12K default)')) return;
+  $('custom-prompt-active').checked = false;
+  $('custom-prompt').value = '';
+  // Wipe any uncheck-state in localStorage so the sections editor starts clean next time
+  try {
+    localStorage.removeItem('bench.sectionCheck');
+    localStorage.removeItem('bench.ruleExclude');
+    localStorage.removeItem('bench.sectionExpand');
+  } catch {}
+  // Drop the cached default and the section editor's UI state
+  defaultPromptCache = null;
+  sectionCheckState.clear();
+  ruleExcludeState.clear();
+  sectionExpandState.clear();
+  $('sections-panel').style.display = 'none';
+  await saveState();
+}
+
+const resetBtn = $('reset-settings-btn'); if (resetBtn) resetBtn.onclick = useGrokDefaults;
+const defaultPromptBtn = $('use-default-prompt-btn'); if (defaultPromptBtn) defaultPromptBtn.onclick = useGrokDefaultPrompt;
+
+// ---------- Grok user-config editor (Config view) ----------
+
+// --- Minimal line-based TOML edit helpers ---
+// These intentionally operate on text (not an AST) so the user's formatting,
+// comments, and key ordering are preserved. Sufficient for grok's flat configs.
+
+function escRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Find the index range [start, end) of a section's body in `lines`.
+// Returns null if the section is missing.
+function findSectionRange(lines, name) {
+  const head = new RegExp(`^\\s*\\[${escRe(name)}\\]\\s*$`);
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (head.test(lines[i])) { start = i + 1; break; }
+  }
+  if (start === -1) return null;
+  let end = lines.length;
+  for (let i = start; i < lines.length; i++) {
+    if (/^\s*\[/.test(lines[i])) { end = i; break; }
+  }
+  return [start, end];
+}
+
+// Get the raw RHS text of a key in a section, or null.
+function tomlGet(text, section, key) {
+  const lines = text.split('\n');
+  const range = findSectionRange(lines, section);
+  if (!range) return null;
+  const re = new RegExp(`^\\s*${escRe(key)}\\s*=\\s*(.+?)\\s*$`);
+  for (let i = range[0]; i < range[1]; i++) {
+    const m = lines[i].match(re);
+    if (m) return m[1];
+  }
+  return null;
+}
+function tomlGetBool(text, section, key) {
+  const v = tomlGet(text, section, key);
+  if (v == null) return undefined;
+  if (/^(true|false)$/i.test(v)) return v.toLowerCase() === 'true';
+  return undefined;
+}
+function tomlGetString(text, section, key) {
+  const v = tomlGet(text, section, key);
+  if (v == null) return undefined;
+  const m = v.match(/^"(.*)"$/) || v.match(/^'(.*)'$/);
+  return m ? m[1] : v;
+}
+
+// Insert/overwrite a key=value in a section. Creates the section if needed.
+// `rhs` is the raw right-hand-side text (already quoted/formatted).
+function tomlSet(text, section, key, rhs) {
+  let lines = text.split('\n');
+  let range = findSectionRange(lines, section);
+  const keyRe = new RegExp(`^\\s*${escRe(key)}\\s*=`);
+  if (!range) {
+    // Append a fresh section at the end with a leading blank line if needed
+    if (lines.length && lines[lines.length - 1].trim() !== '') lines.push('');
+    lines.push(`[${section}]`, `${key} = ${rhs}`);
+    return lines.join('\n');
+  }
+  // Look for existing key inside the section
+  for (let i = range[0]; i < range[1]; i++) {
+    if (keyRe.test(lines[i])) {
+      lines[i] = `${key} = ${rhs}`;
+      return lines.join('\n');
+    }
+  }
+  // Insert before end of section, trim trailing blank lines that belong to the section
+  let insertAt = range[1];
+  while (insertAt > range[0] && lines[insertAt - 1].trim() === '') insertAt--;
+  lines.splice(insertAt, 0, `${key} = ${rhs}`);
+  return lines.join('\n');
+}
+
+// Remove a key. If the section becomes empty, remove the header too.
+function tomlRemove(text, section, key) {
+  let lines = text.split('\n');
+  const range = findSectionRange(lines, section);
+  if (!range) return text;
+  const keyRe = new RegExp(`^\\s*${escRe(key)}\\s*=`);
+  let removedAt = -1;
+  for (let i = range[0]; i < range[1]; i++) {
+    if (keyRe.test(lines[i])) { removedAt = i; break; }
+  }
+  if (removedAt === -1) return text;
+  lines.splice(removedAt, 1);
+  // Re-resolve range and check if section is now empty
+  const range2 = findSectionRange(lines, section);
+  if (range2) {
+    let hasContent = false;
+    for (let i = range2[0]; i < range2[1]; i++) {
+      if (/\S/.test(lines[i]) && !/^\s*#/.test(lines[i])) { hasContent = true; break; }
+    }
+    if (!hasContent) {
+      // Remove the section header + trailing blank line
+      const headerIdx = range2[0] - 1;
+      lines.splice(headerIdx, range2[1] - headerIdx);
+      // Drop one trailing blank line for cleanliness
+      if (lines[headerIdx] !== undefined && lines[headerIdx].trim() === '') {
+        lines.splice(headerIdx, 1);
+      }
+    }
+  }
+  // Collapse runs of blank lines to at most one
+  const collapsed = [];
+  let prevBlank = false;
+  for (const l of lines) {
+    const blank = l.trim() === '';
+    if (blank && prevBlank) continue;
+    collapsed.push(l);
+    prevBlank = blank;
+  }
+  // Trim leading/trailing blank lines
+  while (collapsed.length && collapsed[0].trim() === '') collapsed.shift();
+  while (collapsed.length && collapsed[collapsed.length - 1].trim() === '') collapsed.pop();
+  return collapsed.join('\n') + (collapsed.length ? '\n' : '');
+}
+
+// --- Control definitions ---
+// Each control reads from current textarea text, applies edits via tomlSet/Remove.
+const PROXY_BASE_URL = 'http://127.0.0.1:18180/v1';
+
+const GC_CONTROLS = [
+  {
+    kind: 'bool',
+    label: 'Route grok-build through bench proxy',
+    sub: '<code>[model.grok-build]</code> base_url = "' + PROXY_BASE_URL + '"',
+    get: (t) => tomlGetString(t, 'model.grok-build', 'base_url') === PROXY_BASE_URL,
+    set: (t, on) => on
+      ? tomlSet(t, 'model.grok-build', 'base_url', `"${PROXY_BASE_URL}"`)
+      : tomlRemove(t, 'model.grok-build', 'base_url'),
+  },
+  {
+    kind: 'bool',
+    label: 'Disable Mixpanel telemetry',
+    sub: '<code>[telemetry]</code> mixpanel_enabled = false',
+    get: (t) => tomlGetBool(t, 'telemetry', 'mixpanel_enabled') === false,
+    set: (t, on) => on
+      ? tomlSet(t, 'telemetry', 'mixpanel_enabled', 'false')
+      : tomlRemove(t, 'telemetry', 'mixpanel_enabled'),
+  },
+  {
+    kind: 'bool',
+    label: 'Disable trace uploads',
+    sub: '<code>[telemetry]</code> trace_upload = false',
+    get: (t) => tomlGetBool(t, 'telemetry', 'trace_upload') === false,
+    set: (t, on) => on
+      ? tomlSet(t, 'telemetry', 'trace_upload', 'false')
+      : tomlRemove(t, 'telemetry', 'trace_upload'),
+  },
+  {
+    kind: 'bool',
+    label: 'Always-approve permissions',
+    sub: '<code>[ui]</code> permission_mode = "always-approve"',
+    get: (t) => tomlGetString(t, 'ui', 'permission_mode') === 'always-approve',
+    set: (t, on) => on
+      ? tomlSet(t, 'ui', 'permission_mode', '"always-approve"')
+      : tomlRemove(t, 'ui', 'permission_mode'),
+  },
+  {
+    kind: 'bool',
+    label: 'YOLO mode (skip safety prompts)',
+    sub: '<code>[ui]</code> yolo = true',
+    get: (t) => tomlGetBool(t, 'ui', 'yolo') === true,
+    set: (t, on) => on
+      ? tomlSet(t, 'ui', 'yolo', 'true')
+      : tomlRemove(t, 'ui', 'yolo'),
+  },
+  {
+    kind: 'bool',
+    label: 'Subagents enabled',
+    sub: '<code>[subagents]</code> enabled = true',
+    get: (t) => tomlGetBool(t, 'subagents', 'enabled') === true,
+    set: (t, on) => on
+      ? tomlSet(t, 'subagents', 'enabled', 'true')
+      : tomlRemove(t, 'subagents', 'enabled'),
+  },
+  {
+    kind: 'bool',
+    label: 'Codebase indexing',
+    sub: '<code>[features]</code> codebase_indexing = true',
+    get: (t) => tomlGetBool(t, 'features', 'codebase_indexing') === true,
+    set: (t, on) => on
+      ? tomlSet(t, 'features', 'codebase_indexing', 'true')
+      : tomlRemove(t, 'features', 'codebase_indexing'),
+  },
+  {
+    kind: 'number',
+    label: 'grok-build temperature',
+    sub: '<code>[model.grok-build]</code> temperature',
+    placeholder: 'leave blank to unset',
+    step: '0.1', min: '0', max: '2',
+    get: (t) => {
+      const v = tomlGet(t, 'model.grok-build', 'temperature');
+      return v == null ? '' : v;
+    },
+    set: (t, v) => v === '' || v == null
+      ? tomlRemove(t, 'model.grok-build', 'temperature')
+      : tomlSet(t, 'model.grok-build', 'temperature', String(parseFloat(v))),
+  },
+  {
+    kind: 'number',
+    label: 'grok-build top_p',
+    sub: '<code>[model.grok-build]</code> top_p',
+    placeholder: 'leave blank to unset',
+    step: '0.01', min: '0', max: '1',
+    get: (t) => {
+      const v = tomlGet(t, 'model.grok-build', 'top_p');
+      return v == null ? '' : v;
+    },
+    set: (t, v) => v === '' || v == null
+      ? tomlRemove(t, 'model.grok-build', 'top_p')
+      : tomlSet(t, 'model.grok-build', 'top_p', String(parseFloat(v))),
+  },
+];
+
+let gcState = { baseline: '', current: '', backups: [], path: '' };
+let gcSelectedBackup = null;
+
+async function gcLoad() {
+  const r = await fetch('/api/grok-config');
+  const d = await r.json();
+  gcState = {
+    baseline: (d.baseline && d.baseline.text) || '',
+    current: d.text || '',
+    backups: d.backups || [],
+    path: d.path || '',
+  };
+  $('gc-path').textContent = d.path || '';
+  $('gc-textarea').value = d.text || '';
+  $('gc-inspect').hidden = true;
+  gcRenderControls();
+  gcRenderDiff();
+  gcRenderHistory();
+}
+
+// Re-derive control values from the textarea's current content, render the controls.
+function gcRenderControls() {
+  const host = $('gc-controls');
+  if (!host) return;
+  const text = $('gc-textarea').value;
+  host.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'gc-controls-head';
+  head.innerHTML = '<strong>Quick toggles</strong><span class="hint" style="margin-left: 8px;">edits the TOML on the fly — your formatting + comments are preserved</span>';
+  host.appendChild(head);
+  const grid = document.createElement('div');
+  grid.className = 'gc-controls-grid';
+  host.appendChild(grid);
+
+  for (const ctrl of GC_CONTROLS) {
+    const row = document.createElement('div');
+    row.className = 'gc-ctrl';
+    if (ctrl.kind === 'bool') {
+      const checked = !!ctrl.get(text);
+      row.innerHTML = `
+        <label class="gc-ctrl-row">
+          <input type="checkbox" ${checked ? 'checked' : ''} />
+          <div class="gc-ctrl-body">
+            <div class="gc-ctrl-label">${escapeHtml(ctrl.label)}</div>
+            <div class="gc-ctrl-sub muted">${ctrl.sub}</div>
+          </div>
+        </label>`;
+      row.querySelector('input').addEventListener('change', (ev) => {
+        const newText = ctrl.set($('gc-textarea').value, ev.target.checked);
+        $('gc-textarea').value = newText;
+        // Re-render so other controls reflect any cascading changes
+        gcRenderControls();
+      });
+    } else if (ctrl.kind === 'number') {
+      const val = ctrl.get(text);
+      row.innerHTML = `
+        <div class="gc-ctrl-row">
+          <input type="number" value="${escapeHtml(String(val ?? ''))}" placeholder="${escapeHtml(ctrl.placeholder || '')}" step="${ctrl.step || 'any'}" ${ctrl.min!=null?`min="${ctrl.min}"`:''} ${ctrl.max!=null?`max="${ctrl.max}"`:''} />
+          <div class="gc-ctrl-body">
+            <div class="gc-ctrl-label">${escapeHtml(ctrl.label)}</div>
+            <div class="gc-ctrl-sub muted">${ctrl.sub}</div>
+          </div>
+        </div>`;
+      const inp = row.querySelector('input');
+      // Update on blur and Enter (not every keystroke — avoids cursor jumping)
+      const commit = () => {
+        const newText = ctrl.set($('gc-textarea').value, inp.value);
+        $('gc-textarea').value = newText;
+        gcRenderControls();
+      };
+      inp.addEventListener('blur', commit);
+      inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); commit(); }});
+    }
+    grid.appendChild(row);
+  }
+}
+
+function gcFlash(msg, bad = false) {
+  const el = $('gc-flash');
+  el.textContent = msg;
+  el.classList.toggle('bad', bad);
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+async function gcSave() {
+  const text = $('gc-textarea').value;
+  const r = await fetch('/api/grok-config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  const d = await r.json();
+  if (d.ok) {
+    gcFlash(`saved ${d.length} chars`);
+    gcLoad();
+  } else {
+    gcFlash(d.error || 'save failed', true);
+  }
+}
+
+async function gcValidate() {
+  const out = $('gc-inspect');
+  out.textContent = 'running grok inspect...';
+  out.hidden = false;
+  try {
+    const r = await fetch('/api/grok-inspect');
+    const d = await r.json();
+    out.textContent = (d.stdout || '') + (d.stderr ? '\n--- stderr ---\n' + d.stderr : '');
+    if (d.ok) gcFlash('config valid');
+    else gcFlash('grok inspect returned non-zero', true);
+  } catch (e) {
+    out.textContent = String(e);
+    gcFlash('inspect failed', true);
+  }
+}
+
+async function gcRestoreBaseline() {
+  if (!gcState.baseline) { gcFlash('no baseline yet', true); return; }
+  if (!confirm('Reset to the baseline (the config when you first opened this editor)? Current is backed up first.')) return;
+  const r = await fetch('/api/grok-config/restore/config.toml.baseline', { method: 'POST' });
+  const d = await r.json();
+  if (d.ok) { gcFlash('reset to baseline'); gcLoad(); }
+  else { gcFlash(d.error || 'reset failed', true); }
+}
+
+function gcAppendSnippet(key) {
+  const snip = GC_SNIPPETS[key];
+  if (!snip) return;
+  const ta = $('gc-textarea');
+  const v = ta.value;
+  const sep = (v.length && !v.endsWith('\n\n')) ? (v.endsWith('\n') ? '\n' : '\n\n') : '';
+  ta.value = v + sep + snip;
+  ta.focus();
+  ta.scrollTop = ta.scrollHeight;
+}
+
+// Tabs in the config view
+function gcSetMode(mode) {
+  for (const t of document.querySelectorAll('.gc-tab')) {
+    t.classList.toggle('active', t.dataset.mode === mode);
+  }
+  for (const m of document.querySelectorAll('.gc-mode')) {
+    m.hidden = m.dataset.mode !== mode;
+  }
+  if (mode === 'diff') gcRenderDiff();
+  if (mode === 'history') gcRenderHistory();
+}
+
+// Simple line-by-line diff (LCS-based, sufficient for small config files).
+function lineDiff(a, b) {
+  const A = a.split('\n');
+  const B = b.split('\n');
+  const n = A.length, m = B.length;
+  // Build LCS length table
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = (A[i] === B[j]) ? dp[i+1][j+1] + 1 : Math.max(dp[i+1][j], dp[i][j+1]);
+    }
+  }
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j])             { out.push({ t: '=', text: A[i] }); i++; j++; }
+    else if (dp[i+1][j] >= dp[i][j+1]) { out.push({ t: '-', text: A[i] }); i++; }
+    else                            { out.push({ t: '+', text: B[j] }); j++; }
+  }
+  while (i < n) { out.push({ t: '-', text: A[i++] }); }
+  while (j < m) { out.push({ t: '+', text: B[j++] }); }
+  return out;
+}
+
+function gcRenderDiff() {
+  const el = $('gc-diff');
+  if (!el) return;
+  if (!gcState.baseline && !gcState.current) {
+    el.innerHTML = '<span class="diff-empty">no content to compare</span>';
+    return;
+  }
+  if (gcState.baseline === gcState.current) {
+    el.innerHTML = '<span class="diff-empty">no changes since baseline ✓</span>';
+    return;
+  }
+  const parts = lineDiff(gcState.baseline, gcState.current);
+  el.innerHTML = parts.map(p => {
+    const cls = p.t === '+' ? 'diff-add' : p.t === '-' ? 'diff-del' : 'diff-eq';
+    const prefix = p.t === '=' ? '  ' : (p.t + ' ');
+    return `<span class="${cls}">${escapeHtml(prefix + p.text)}</span>`;
+  }).join('');
+}
+
+async function gcRenderHistory() {
+  const listEl = $('gc-history-list');
+  if (!listEl) return;
+  // Entries: baseline (top) + all timestamped backups
+  const entries = [];
+  if (gcState.baseline) {
+    entries.push({ name: 'config.toml.baseline', label: 'baseline (original)', isBaseline: true });
+  }
+  for (const b of gcState.backups) {
+    entries.push({ name: b, label: b.replace(/^config\.toml\.bak\./, ''), isBaseline: false });
+  }
+  if (!entries.length) {
+    listEl.innerHTML = '<div class="diff-empty">no backups yet — they appear after your first Save</div>';
+    $('gc-history-selected').textContent = '(no backups)';
+    $('gc-restore').disabled = true;
+    $('gc-history-diff').innerHTML = '';
+    return;
+  }
+  listEl.innerHTML = '';
+  for (const e of entries) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.name = e.name;
+    b.innerHTML = e.isBaseline
+      ? `<span class="baseline-label">★ ${escapeHtml(e.label)}</span>`
+      : escapeHtml(e.label);
+    if (e.name === gcSelectedBackup) b.classList.add('active');
+    b.addEventListener('click', () => gcSelectBackup(e.name));
+    listEl.appendChild(b);
+  }
+  // Auto-select first entry if none selected
+  if (!gcSelectedBackup) gcSelectBackup(entries[0].name);
+}
+
+async function gcSelectBackup(name) {
+  gcSelectedBackup = name;
+  for (const b of document.querySelectorAll('#gc-history-list button')) {
+    b.classList.toggle('active', b.dataset.name === name);
+  }
+  $('gc-history-selected').textContent = name;
+  $('gc-restore').disabled = false;
+  try {
+    const r = await fetch(`/api/grok-config/backup/${encodeURIComponent(name)}`);
+    const d = await r.json();
+    if (d.text != null) {
+      // Diff this backup vs current on-disk
+      const parts = lineDiff(d.text, gcState.current);
+      const el = $('gc-history-diff');
+      if (d.text === gcState.current) {
+        el.innerHTML = '<span class="diff-empty">identical to current ✓</span>';
+      } else {
+        el.innerHTML = parts.map(p => {
+          const cls = p.t === '+' ? 'diff-add' : p.t === '-' ? 'diff-del' : 'diff-eq';
+          const prefix = p.t === '=' ? '  ' : (p.t + ' ');
+          return `<span class="${cls}">${escapeHtml(prefix + p.text)}</span>`;
+        }).join('');
+      }
+    } else {
+      $('gc-history-diff').textContent = d.error || '(failed to load)';
+    }
+  } catch (e) {
+    $('gc-history-diff').textContent = String(e);
+  }
+}
+
+async function gcRestoreSelected() {
+  if (!gcSelectedBackup) return;
+  if (!confirm(`Restore ${gcSelectedBackup} over the current config? (current is backed up first)`)) return;
+  const r = await fetch(`/api/grok-config/restore/${encodeURIComponent(gcSelectedBackup)}`, { method: 'POST' });
+  const d = await r.json();
+  if (d.ok) { gcFlash(`restored from ${d.restored_from}`); gcLoad(); }
+  else { gcFlash(d.error || 'restore failed', true); }
+}
+
+// Wire up
+$('gc-save').onclick = gcSave;
+$('gc-reload').onclick = gcLoad;
+$('gc-validate').onclick = gcValidate;
+$('gc-reset-baseline').onclick = gcRestoreBaseline;
+$('gc-restore').onclick = gcRestoreSelected;
+for (const t of document.querySelectorAll('.gc-tab')) {
+  t.addEventListener('click', () => gcSetMode(t.dataset.mode));
+}
+// Manual edits to the TOML should refresh the controls so they reflect what's there.
+// Debounce a tiny bit so typing doesn't thrash on every keystroke.
+{
+  let debounceId;
+  $('gc-textarea').addEventListener('input', () => {
+    clearTimeout(debounceId);
+    debounceId = setTimeout(() => gcRenderControls(), 200);
+  });
+}
 ['user-prompt', 'custom-prompt', 'custom-prompt-active', 'temperature', 'max-tokens', 'max-turns', 'effort', 'use-proxy', 'strip-reminders'].forEach((id) => {
   $(id).addEventListener('change', saveState);
 });
 
-// ----- resizable sidebar -----
-(function initResizer() {
-  const root = document.documentElement;
-  // Restore saved width
-  const saved = parseInt(localStorage.getItem('bench.sidebar_w') || '', 10);
-  if (Number.isFinite(saved) && saved > 240 && saved < 1400) {
-    root.style.setProperty('--sidebar-w', saved + 'px');
+// ----- nav: view switching -----
+function setView(name) {
+  if (!['runs', 'prompt', 'config'].includes(name)) name = 'runs';
+  for (const v of document.querySelectorAll('.view')) {
+    v.hidden = !v.classList.contains('view-' + name);
   }
-  const resizer = document.getElementById('resizer');
-  if (!resizer) return;
-  let dragging = false;
-  let startX = 0;
-  let startW = 0;
-  function curW() {
-    const v = getComputedStyle(root).getPropertyValue('--sidebar-w').trim();
-    return parseFloat(v) || 760;
+  for (const b of document.querySelectorAll('.nav-btn')) {
+    b.classList.toggle('active', b.dataset.view === name);
   }
-  resizer.addEventListener('mousedown', (e) => {
-    dragging = true;
-    startX = e.clientX;
-    startW = curW();
-    resizer.classList.add('dragging');
-    document.body.style.userSelect = 'none';
-    document.body.style.cursor = 'col-resize';
-    e.preventDefault();
-  });
-  window.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    const w = Math.max(280, Math.min(1400, startW + (e.clientX - startX)));
-    root.style.setProperty('--sidebar-w', w + 'px');
-  });
-  window.addEventListener('mouseup', () => {
-    if (!dragging) return;
-    dragging = false;
-    resizer.classList.remove('dragging');
-    document.body.style.userSelect = '';
-    document.body.style.cursor = '';
-    localStorage.setItem('bench.sidebar_w', String(Math.round(curW())));
-  });
-  // Double-click to reset to default 760
-  resizer.addEventListener('dblclick', () => {
-    root.style.setProperty('--sidebar-w', '760px');
-    localStorage.setItem('bench.sidebar_w', '760');
-  });
+  try { localStorage.setItem('bench.view', name); } catch {}
+  // Auto-load the config when switching to it
+  if (name === 'config' && typeof gcLoad === 'function') gcLoad();
+}
+(function initNav() {
+  for (const b of document.querySelectorAll('.nav-btn')) {
+    b.addEventListener('click', () => setView(b.dataset.view));
+  }
+  const saved = (() => { try { return localStorage.getItem('bench.view'); } catch { return null; } })();
+  setView(saved || 'runs');
 })();
 
 (async () => {

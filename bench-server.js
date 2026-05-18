@@ -402,7 +402,7 @@ trace_upload = false
   writeFileSync(userPromptPath, state.user_prompt);
 
   const logPath = path.join(workdir, 'run.log');
-  // Resolve grok binary: prefer $GROK_BIN, then ~/.grok/bin/grok, else expect it on PATH
+  // Resolve grok binary: prefer $GROK_BIN, else ~/.grok/bin/grok
   const grok = process.env.GROK_BIN
     || path.join(process.env.HOME || '', '.grok/bin/grok');
   const args = [
@@ -681,6 +681,108 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === '/api/proxy/status') {
     return json(res, { alive: await checkProxy(), port: PROXY_PORT });
+  }
+
+  // --- grok user config (~/.grok/config.toml) editor ---
+  const GROK_HOME_USER = path.join(process.env.HOME || '', '.grok');
+  const USER_CONFIG = path.join(GROK_HOME_USER, 'config.toml');
+
+  if (url.pathname === '/api/grok-config' && req.method === 'GET') {
+    const exists = existsSync(USER_CONFIG);
+    const text = exists ? readFileSync(USER_CONFIG, 'utf8') : '';
+    // Snapshot the baseline ONCE — the original config when the editor was first opened
+    const BASELINE = path.join(GROK_HOME_USER, 'config.toml.baseline');
+    if (exists && !existsSync(BASELINE)) {
+      try { writeFileSync(BASELINE, text); } catch {}
+    }
+    const baselineText = existsSync(BASELINE) ? readFileSync(BASELINE, 'utf8') : '';
+    // List any timestamped backups + the baseline
+    let backups = [];
+    try {
+      backups = readdirSync(GROK_HOME_USER)
+        .filter(f => /^config\.toml\.bak\./.test(f))
+        .sort().reverse();
+    } catch {}
+    return json(res, {
+      path: USER_CONFIG,
+      exists,
+      text,
+      length: text.length,
+      backups,
+      baseline: { exists: existsSync(BASELINE), text: baselineText, length: baselineText.length },
+    });
+  }
+
+  // Return the text content of a specific backup (for preview/diff)
+  const bakRead = url.pathname.match(/^\/api\/grok-config\/backup\/(.+)$/);
+  if (bakRead && req.method === 'GET') {
+    const name = decodeURIComponent(bakRead[1]);
+    if (!/^config\.toml\.(bak\.|baseline$)/.test(name) || name.includes('/') || name.includes('..')) {
+      return json(res, { error: 'invalid name' }, 400);
+    }
+    const p = path.join(GROK_HOME_USER, name);
+    if (!existsSync(p)) return json(res, { error: 'not found' }, 404);
+    return json(res, { name, text: readFileSync(p, 'utf8') });
+  }
+
+  if (url.pathname === '/api/grok-config' && req.method === 'POST') {
+    try {
+      const body = await readJson(req);
+      const text = String(body.text ?? '');
+      // Always back up an existing config before overwrite (timestamped)
+      if (existsSync(USER_CONFIG)) {
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const bak = `${USER_CONFIG}.bak.${ts}`;
+        writeFileSync(bak, readFileSync(USER_CONFIG, 'utf8'));
+      }
+      mkdirSync(GROK_HOME_USER, { recursive: true });
+      writeFileSync(USER_CONFIG, text);
+      return json(res, { ok: true, path: USER_CONFIG, length: text.length });
+    } catch (e) {
+      return json(res, { error: String(e) }, 400);
+    }
+  }
+
+  const restoreMatch = url.pathname.match(/^\/api\/grok-config\/restore\/(.+)$/);
+  if (restoreMatch && req.method === 'POST') {
+    const bakName = decodeURIComponent(restoreMatch[1]);
+    if (!/^config\.toml\.(bak\.|baseline$)/.test(bakName) || bakName.includes('/') || bakName.includes('..')) {
+      return json(res, { error: 'invalid backup name' }, 400);
+    }
+    const bakPath = path.join(GROK_HOME_USER, bakName);
+    if (!existsSync(bakPath)) return json(res, { error: 'backup not found' }, 404);
+    // Backup the current before restore (in case the user wants to flip back)
+    if (existsSync(USER_CONFIG)) {
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      writeFileSync(`${USER_CONFIG}.bak.${ts}`, readFileSync(USER_CONFIG, 'utf8'));
+    }
+    writeFileSync(USER_CONFIG, readFileSync(bakPath, 'utf8'));
+    return json(res, { ok: true, restored_from: bakName });
+  }
+
+  // Run `grok inspect` to validate and show what grok actually discovers.
+  if (url.pathname === '/api/grok-inspect') {
+    const grokBin = process.env.GROK_BIN || path.join(process.env.HOME || '', '.grok/bin/grok');
+    return new Promise((resolve) => {
+      const child = spawn(grokBin, ['inspect'], {
+        env: { ...process.env, GROK_HOME: GROK_HOME_USER },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let out = '', err = '';
+      child.stdout.on('data', (b) => { out += b; });
+      child.stderr.on('data', (b) => { err += b; });
+      const timer = setTimeout(() => { child.kill('SIGKILL'); }, 10000);
+      child.on('exit', (code) => {
+        clearTimeout(timer);
+        json(res, { ok: code === 0, code, stdout: out, stderr: err });
+        resolve();
+      });
+      child.on('error', (e) => {
+        clearTimeout(timer);
+        json(res, { error: String(e) }, 500);
+        resolve();
+      });
+    });
   }
 
   // Reveal a run folder in Finder (macOS only)

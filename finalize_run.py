@@ -16,7 +16,6 @@ m = json.loads(m_path.read_text()) if m_path.exists() else {}
 # <BENCH_ROOT>/grokhome before spawning grok, so sessions land here.
 bench_root = pathlib.Path(os.environ.get('BENCH_ROOT', pathlib.Path(__file__).resolve().parent))
 sess_root = bench_root / 'grokhome' / 'sessions'
-# Grok url-encodes the cwd as the session-bucket directory name
 candidate_dir = sess_root / quote(str(workdir), safe='')
 sess_path = None
 if candidate_dir.exists():

@@ -38,10 +38,8 @@ LOG_DIR = BENCH_ROOT / "proxy_rewrite_logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 INDEX = LOG_DIR / "index.jsonl"
 PORT = int(os.environ.get("PROXY_PORT", "18180"))
-# File the bench writes before each run so we know where to drop captures
 CURRENT_RUN_FILE = BENCH_ROOT / ".current_run_tag"
 RUN_ROOT = BENCH_ROOT
-# Marker: when this file exists, replace <system-reminder> user messages with a placeholder
 STRIP_REMINDERS_FILE = BENCH_ROOT / ".strip_reminders"
 
 
