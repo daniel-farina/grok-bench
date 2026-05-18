@@ -44,8 +44,9 @@ h1 { margin: 0; font-size: 16px; font-weight: 600; }
 
 main {
   display: grid;
-  grid-template-columns: 170px 1fr;
+  grid-template-columns: var(--nav-w, 170px) 1fr;
   min-height: calc(100vh - 60px);
+  transition: grid-template-columns 0.18s ease;
 }
 .panel { padding: 16px 20px; overflow-y: auto; }
 .view { min-width: 0; }
@@ -64,6 +65,39 @@ main {
   padding: 12px 10px;
 }
 .nav-list { display: flex; flex-direction: column; gap: 3px; }
+
+/* Collapse toggle — sits at the top of the sidebar */
+.nav-collapse {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  width: 24px; height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  align-self: flex-end;
+  margin-bottom: 8px;
+  font-size: 14px;
+  line-height: 1;
+  transition: background 0.12s, color 0.12s;
+}
+.nav-collapse:hover { background: var(--bg-2); color: var(--text); }
+
+/* When collapsed, hide labels and shrink padding */
+.navbar.collapsed { padding: 12px 6px; }
+.navbar.collapsed .nav-collapse { align-self: center; }
+.navbar.collapsed .nav-label,
+.navbar.collapsed .nav-credit { display: none; }
+.navbar.collapsed .nav-btn,
+.navbar.collapsed .nav-link {
+  justify-content: center;
+  padding: 8px 0;
+}
+.navbar.collapsed .nav-btn .nav-icon,
+.navbar.collapsed .nav-link .nav-icon {
+  font-size: 18px;
+  width: auto;
+}
+.navbar.collapsed .nav-social { flex-direction: column; gap: 6px; }
 .nav-btn {
   display: flex; align-items: center; gap: 10px;
   width: 100%;
@@ -334,6 +368,31 @@ textarea { resize: vertical; min-height: 140px; line-height: 1.45; }
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-muted);
+}
+
+/* Per-run trends — range filter */
+.range-filter {
+  display: inline-flex;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+  vertical-align: middle;
+}
+.range-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 0;
+  padding: 3px 9px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.range-btn:hover { background: var(--bg-2); color: var(--text); }
+.range-btn.active {
+  background: rgba(94,234,212,0.12);
+  color: var(--accent);
 }
 
 /* Per-run trends charts */

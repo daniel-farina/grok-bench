@@ -20,6 +20,7 @@
 
   <main>
     <aside class="navbar" id="navbar">
+      <button class="nav-collapse" id="nav-collapse" type="button" title="collapse sidebar" aria-label="collapse sidebar">«</button>
       <nav class="nav-list">
         <button class="nav-btn" data-view="runs" title="all runs + metrics + charts">
           <span class="nav-icon">⊞</span>
@@ -57,7 +58,16 @@
         <div id="totals" class="totals-strip"></div>
       </section>
       <section>
-        <h2>Per-run trends <span class="muted" style="font-weight:normal; text-transform:none; letter-spacing:0;">(oldest → newest)</span></h2>
+        <h2>
+          Per-run trends
+          <span class="muted" style="font-weight:normal; text-transform:none; letter-spacing:0;">(oldest → newest)</span>
+          <span class="range-filter" id="range-filter" style="margin-left: 10px;">
+            <button class="range-btn" data-range="24h" type="button">24h</button>
+            <button class="range-btn" data-range="7d"  type="button">7d</button>
+            <button class="range-btn" data-range="30d" type="button">30d</button>
+            <button class="range-btn active" data-range="all" type="button">all</button>
+          </span>
+        </h2>
         <div id="charts" class="charts-strip"></div>
       </section>
       <section>

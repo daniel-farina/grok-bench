@@ -121,10 +121,31 @@ function findRowTr(tag)       { return document.querySelector(`tr.row[data-folde
 function findExpandedTr(tag)  { return document.querySelector(`tr.expanded-row[data-folder="${cssQ(tag)}"]`); }
 
 // ----- charts -----
+// Time-range filter for "Per-run trends". Persists in localStorage.
+let chartRange = (() => {
+  try { return localStorage.getItem('bench.chartRange') || 'all'; } catch { return 'all'; }
+})();
+const RANGE_MS = { '24h': 24*3600e3, '7d': 7*86400e3, '30d': 30*86400e3, all: Infinity };
+
+function setChartRange(r) {
+  chartRange = r;
+  try { localStorage.setItem('bench.chartRange', r); } catch {}
+  for (const b of document.querySelectorAll('#range-filter .range-btn')) {
+    b.classList.toggle('active', b.dataset.range === r);
+  }
+  loadRuns();
+}
+
 function renderCharts(rows) {
+  // Apply time-range filter (uses _mtime — millisecond epoch)
+  const cutoff = Date.now() - (RANGE_MS[chartRange] ?? Infinity);
+  const filtered = rows.filter(r => (r._mtime || 0) >= cutoff);
   // Oldest → newest (rows from API arrive newest-first)
-  const ordered = rows.slice().reverse();
-  if (!ordered.length) { $('charts').innerHTML = ''; return; }
+  const ordered = filtered.slice().reverse();
+  if (!ordered.length) {
+    $('charts').innerHTML = `<div class="empty" style="grid-column: 1 / -1;">No runs in the last ${chartRange === 'all' ? 'forever' : chartRange}.</div>`;
+    return;
+  }
 
   const charts = [
     { key: 'cost',       label: 'cost (USD)', color: 'var(--warn)',  fmt: v => '$' + (v/1e9).toFixed(4), val: r => r.cost_ticks || 0 },
@@ -2039,8 +2060,38 @@ function setView(name) {
   setView(saved || 'runs');
 })();
 
+// Sidebar collapse — persisted in localStorage
+function setSidebarCollapsed(collapsed) {
+  const navbar = document.getElementById('navbar');
+  if (!navbar) return;
+  navbar.classList.toggle('collapsed', collapsed);
+  document.documentElement.style.setProperty('--nav-w', collapsed ? '52px' : '170px');
+  const btn = document.getElementById('nav-collapse');
+  if (btn) {
+    btn.textContent = collapsed ? '»' : '«';
+    btn.title = collapsed ? 'expand sidebar' : 'collapse sidebar';
+  }
+  try { localStorage.setItem('bench.navCollapsed', collapsed ? '1' : '0'); } catch {}
+}
+(function initSidebarCollapse() {
+  const btn = document.getElementById('nav-collapse');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      const navbar = document.getElementById('navbar');
+      setSidebarCollapsed(!navbar.classList.contains('collapsed'));
+    });
+  }
+  const saved = (() => { try { return localStorage.getItem('bench.navCollapsed'); } catch { return null; } })();
+  setSidebarCollapsed(saved === '1');
+})();
+
 (async () => {
   $('runs').addEventListener('click', onRunsClick);
+  // Chart range filter buttons
+  for (const b of document.querySelectorAll('#range-filter .range-btn')) {
+    b.classList.toggle('active', b.dataset.range === chartRange);
+    b.addEventListener('click', () => setChartRange(b.dataset.range));
+  }
   await loadState();
   await loadRuns();
   setInterval(loadRuns, 3000);
