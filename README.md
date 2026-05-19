@@ -36,6 +36,16 @@ Click any row to expand it (default tab: `metrics`). Click `⛶` in the tab stri
 
 ![Per-run metrics view in fullscreen](docs/metrics-view.png)
 
+### Config view — edit `~/.grok/config.toml` with diff + history
+
+The **Config** view in the sidebar lets you edit your real `~/.grok/config.toml` — the one every grok session on the machine reads — through three tabs:
+
+- **edit:** TOML text + structured quick-toggles (route grok-build through the proxy, disable telemetry, set `permission_mode`, etc.). Every Save writes a timestamped backup first.
+- **diff vs baseline:** the first time you ever open the editor, the bench snapshots your existing config as a frozen **baseline**. From then on, this tab shows a git-style diff of what's changed since — useful for catching that one tweak you made three weeks ago and forgot about.
+- **history:** lists every save-time backup; pick one to preview a diff against current, then restore in one click (the current is backed up first, so it's reversible).
+
+![Config view showing diff against baseline](docs/config-diff.png)
+
 ## What's inside
 
 ```
