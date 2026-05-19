@@ -159,7 +159,7 @@ function explosionFrame(intensity) {
 // Final compact form: a 1-line mini logo
 function compactLogo() {
   // tiny block-art tag + name + version, gradient teal → blue inline
-  return `  ${TEAL}▰${BLUE}▰${TEAL}▰${reset} ${bold}grok-bench${reset} ${DIM}v${pkgVersion}${reset}`;
+  return `  ${TEAL}▰${BLUE}▰${TEAL}▰${reset} ${bold}Grok Bench${reset} ${DIM}v${pkgVersion}${reset}`;
 }
 
 async function printBanner() {
