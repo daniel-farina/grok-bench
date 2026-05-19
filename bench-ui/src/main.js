@@ -438,8 +438,24 @@ function onRunsClick(ev) {
 function collapsePanel(tag) {
   clearPanelPoller(tag);
   const exp = findExpandedTr(tag);
-  if (exp) exp.remove();
+  if (exp) {
+    // If this panel was in fullscreen, clear the body flag
+    if (exp.classList.contains('row-fullscreen')) {
+      document.body.classList.remove('has-fullscreen-row');
+    }
+    exp.remove();
+  }
 }
+// Escape exits fullscreen mode
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') {
+    const full = document.querySelector('tr.expanded-row.row-fullscreen');
+    if (full) {
+      full.classList.remove('row-fullscreen');
+      document.body.classList.remove('has-fullscreen-row');
+    }
+  }
+});
 
 // ---- Per-run metrics view (new) ----
 async function renderMetricsInto(folder, container) {
@@ -818,6 +834,8 @@ function expandPanel(tag, action) {
         <button data-tab="log">run.log</button>
         <button data-tab="captures">captures</button>
         <button data-tab="settings">settings</button>
+        <button class="panel-files-toggle" title="Toggle files panel">📁</button>
+        <button class="panel-maximize" title="Maximize / restore">⛶</button>
         <button class="panel-close" title="Close">&times;</button>
       </div>
       <div class="run-panel-split">
@@ -849,6 +867,31 @@ function expandPanel(tag, action) {
       collapsePanel(tag);
       const r2 = findRowTr(tag);
       if (r2) r2.classList.remove('row-expanded');
+    });
+    panel.querySelector('.panel-maximize').addEventListener('click', () => {
+      exp.classList.toggle('row-fullscreen');
+      document.body.classList.toggle('has-fullscreen-row', exp.classList.contains('row-fullscreen'));
+    });
+    // Files-panel toggle (global preference, persists across panels/reloads)
+    const filesBtn = panel.querySelector('.panel-files-toggle');
+    function applyFilesCollapsed(collapsed) {
+      panel.classList.toggle('files-collapsed', collapsed);
+      filesBtn.classList.toggle('active', !collapsed);
+      filesBtn.title = collapsed ? 'Show files panel' : 'Hide files panel';
+    }
+    const filesInit = (() => { try { return localStorage.getItem('bench.filesCollapsed') === '1'; } catch { return false; } })();
+    applyFilesCollapsed(filesInit);
+    filesBtn.addEventListener('click', () => {
+      const next = !panel.classList.contains('files-collapsed');
+      applyFilesCollapsed(next);
+      try { localStorage.setItem('bench.filesCollapsed', next ? '1' : '0'); } catch {}
+      // Apply to every other open panel too, so the preference is consistent
+      for (const otherPanel of document.querySelectorAll('.run-panel')) {
+        if (otherPanel === panel) continue;
+        otherPanel.classList.toggle('files-collapsed', next);
+        const btn = otherPanel.querySelector('.panel-files-toggle');
+        if (btn) { btn.classList.toggle('active', !next); }
+      }
     });
     for (const tabBtn of panel.querySelectorAll('[data-tab]')) {
       tabBtn.addEventListener('click', () => {

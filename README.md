@@ -4,6 +4,8 @@ A test bench for the **Grok CLI** (`grok` / `grok-build`). Lets you A/B differen
 
 Built for one thing: figuring out what settings make Grok produce more elaborate code (games, simulators, complex apps) versus more conservative output.
 
+> ⚠ **Not affiliated with xAI or grok.** Community benchmarking tool — for beta testing & research.
+
 ## Quick start
 
 ```bash
@@ -15,6 +17,24 @@ npm start              # serves everything on http://127.0.0.1:7900
 ```
 
 Open <http://127.0.0.1:7900>. One Node process, two listeners, no Python.
+
+### On startup
+
+`npm start` produces an animated ASCII-art banner (the GROK letters shimmer in, flash, and explode into sparkles before collapsing to a compact one-liner), then a clean status summary with all three URLs and the live readiness indicator:
+
+![Animated terminal banner on startup](docs/terminal-banner.png)
+
+### The Runs view
+
+Landing page after `Open http://127.0.0.1:7900/`. Top: an 8-tile **totals strip** rolled up from every captured API call across every run (runs, API calls, tool calls, input/output/total tokens, cost). Below: 6 **per-run trend charts** plotting each metric over time (oldest → newest) with selectable 24h / 7d / 30d / all ranges. Below that: the **runs table** — each row is one run with all settings (default/custom prompt, temperature, max tokens, max_turns, effort, strip, proxy) and metrics (calls, tools, lines, in/out/total tokens, cache & reasoning %) as inline chips so the table stays compact:
+
+![grok-bench Runs view](docs/dashboard.png)
+
+### Per-run metrics view
+
+Click any row to expand it (default tab: `metrics`). Click `⛶` in the tab strip to maximize to fullscreen for a deep dive. Each capture in the run is rendered as one bar on a Gantt-style **timeline** (colored by tool name, width = duration), a stacked **tokens-per-call** chart (cached / input / reasoning / visible-output), a **tool-call distribution** bar chart, and a cumulative cost line. Files written by the model show up in a collapsible right rail:
+
+![Per-run metrics view in fullscreen](docs/metrics-view.png)
 
 ## What's inside
 

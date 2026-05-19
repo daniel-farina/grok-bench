@@ -43,8 +43,11 @@ const TEAL  = rgb(94, 234, 212);
 const BLUE  = rgb(121, 192, 255);
 const GOOD  = rgb(134, 239, 172);
 const WARN  = rgb(251, 191, 36);
+const RED   = rgb(255, 123, 114);
 const MUTED = rgb(134, 147, 164);
 const DIM   = rgb(74, 83, 96);
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Read version from package.json so the banner stays accurate
 let pkgVersion = '0.0.0';
@@ -52,25 +55,182 @@ try {
   pkgVersion = JSON.parse(readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || pkgVersion;
 } catch {}
 
-function printBanner() {
-  // 6-line "GROK" ANSI-Shadow figlet — each line gets a gradient from teal → blue
-  const banner = [
-    '   ██████╗ ██████╗  ██████╗ ██╗  ██╗',
-    '  ██╔════╝ ██╔══██╗██╔═══██╗██║ ██╔╝',
-    '  ██║  ███╗██████╔╝██║   ██║█████╔╝ ',
-    '  ██║   ██║██╔══██╗██║   ██║██╔═██╗ ',
-    '  ╚██████╔╝██║  ██║╚██████╔╝██║  ██╗',
-    '   ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝',
-  ];
-  // Per-line interpolation between teal (94,234,212) and sky blue (121,192,255)
-  const lerp = (a, b, t) => Math.round(a + (b - a) * t);
-  for (let i = 0; i < banner.length; i++) {
-    const t = i / (banner.length - 1);
-    const c = rgb(lerp(94, 121, t), lerp(234, 192, t), lerp(212, 255, t));
-    process.stdout.write(`${c}${banner[i]}${reset}\n`);
+// 6-line "GROK" ANSI-Shadow figlet
+const BANNER = [
+  '   ██████╗ ██████╗  ██████╗ ██╗  ██╗',
+  '  ██╔════╝ ██╔══██╗██╔═══██╗██║ ██╔╝',
+  '  ██║  ███╗██████╔╝██║   ██║█████╔╝ ',
+  '  ██║   ██║██╔══██╗██║   ██║██╔═██╗ ',
+  '  ╚██████╔╝██║  ██║╚██████╔╝██║  ██╗',
+  '   ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝',
+];
+const lerp = (a, b, t) => Math.round(a + (b - a) * t);
+function baseRgbForLine(i) {
+  const t = i / (BANNER.length - 1);
+  return [lerp(94, 121, t), lerp(234, 192, t), lerp(212, 255, t)];
+}
+function bannerLineColored(lineIdx, shimmerX) {
+  // shimmerX = null disables the shimmer (final resting state)
+  const line = BANNER[lineIdx];
+  const [br, bg_, bb] = baseRgbForLine(lineIdx);
+  // Per-line column count varies; render char by char
+  let out = '';
+  let lastColor = null;
+  for (let x = 0; x < line.length; x++) {
+    const ch = line[x];
+    let r = br, g = bg_, b = bb;
+    if (shimmerX !== null) {
+      // Glow falls off with distance (gaussian-ish)
+      const d = Math.abs(x - shimmerX);
+      const intensity = Math.exp(-(d * d) / 18);  // ~0 beyond ~6 cols
+      r = Math.min(255, r + Math.round(intensity * 90));
+      g = Math.min(255, g + Math.round(intensity * 50));
+      b = Math.min(255, b + Math.round(intensity * 30));
+    }
+    const colorStr = `${r};${g};${b}`;
+    if (colorStr !== lastColor) {
+      out += `\x1b[38;2;${colorStr}m`;
+      lastColor = colorStr;
+    }
+    out += ch;
   }
-  // Subtitle line: " · b e n c h · " with a sparkle dot
-  process.stdout.write(`${MUTED}              ·  ${TEAL}${bold}bench${reset}${MUTED}  ·  ${DIM}v${pkgVersion}${reset}\n`);
+  return out + reset;
+}
+function staticFrame() {
+  let out = '';
+  for (let i = 0; i < BANNER.length; i++) out += bannerLineColored(i, null) + '\n';
+  return out;
+}
+function shimmerFrame(shimmerX) {
+  let out = '';
+  for (let i = 0; i < BANNER.length; i++) out += bannerLineColored(i, shimmerX) + '\n';
+  return out;
+}
+
+// ---- explosion + shrink helpers ----
+const SPARKLES = ['·', '*', '+', '·', '✦', '✧', '⋆', '∗', '·', '◦'];
+function rand(n) { return Math.floor(Math.random() * n); }
+function flashFrame() {
+  // Everything pure white
+  let out = '';
+  for (let i = 0; i < BANNER.length; i++) {
+    out += `\x1b[38;2;255;255;255m\x1b[1m${BANNER[i]}${reset}\n`;
+  }
+  return out;
+}
+function explosionFrame(intensity) {
+  // intensity: 0..1 — at 1 most chars get replaced by sparkles in bright random hues
+  let out = '';
+  for (let i = 0; i < BANNER.length; i++) {
+    const line = BANNER[i];
+    const [br, bg_, bb] = baseRgbForLine(i);
+    let lineOut = '';
+    let lastColor = null;
+    for (let x = 0; x < line.length; x++) {
+      const ch = line[x];
+      if (ch === ' ') { lineOut += ' '; continue; }
+      const replace = Math.random() < intensity;
+      let r, g, b, glyph;
+      if (replace) {
+        // Sparkle with a hot color (white-ish / teal-ish, randomized)
+        r = 200 + rand(56);
+        g = 200 + rand(56);
+        b = 200 + rand(56);
+        glyph = SPARKLES[rand(SPARKLES.length)];
+      } else {
+        // Keep the base gradient color but brighten randomly
+        const boost = rand(50);
+        r = Math.min(255, br + boost);
+        g = Math.min(255, bg_ + boost);
+        b = Math.min(255, bb + boost);
+        glyph = ch;
+      }
+      const colorStr = `${r};${g};${b}`;
+      if (colorStr !== lastColor) {
+        lineOut += `\x1b[38;2;${colorStr}m`;
+        lastColor = colorStr;
+      }
+      lineOut += glyph;
+    }
+    out += lineOut + reset + '\n';
+  }
+  return out;
+}
+// Final compact form: a 1-line mini logo
+function compactLogo() {
+  // tiny block-art tag + name + version, gradient teal → blue inline
+  return `  ${TEAL}▰${BLUE}▰${TEAL}▰${reset} ${bold}grok-bench${reset} ${DIM}v${pkgVersion}${reset}`;
+}
+
+async function printBanner() {
+  const animate = COLOR && process.stdout.isTTY && !process.env.NO_ANIMATE;
+  if (!animate) {
+    // Static fallback: just print the compact form, no fanfare
+    process.stdout.write(compactLogo() + '\n\n');
+    process.stdout.write(`  ${RED}⚠ Not affiliated with xAI or grok.${reset}\n`);
+    process.stdout.write(`  ${MUTED}Community benchmarking tool — for beta testing & research.${reset}\n`);
+    process.stdout.write('\n');
+    return;
+  }
+
+  // Hide cursor during the animation
+  process.stdout.write('\x1b[?25l');
+
+  // ---- Phase 1: shimmer wipe (build up) ----
+  const W = Math.max(...BANNER.map((l) => l.length));
+  process.stdout.write(shimmerFrame(-12));
+  const shimmerFrames = 28;
+  const shimmerDuration = 520;
+  for (let f = 1; f <= shimmerFrames; f++) {
+    const t = f / shimmerFrames;
+    const eased = 1 - Math.pow(1 - t, 3);
+    const x = -12 + eased * (W + 24);
+    process.stdout.write(`\x1b[${BANNER.length}A`);
+    process.stdout.write(shimmerFrame(x));
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(shimmerDuration / shimmerFrames);
+  }
+  // ---- Phase 2: settle for a moment ----
+  process.stdout.write(`\x1b[${BANNER.length}A`);
+  process.stdout.write(staticFrame());
+  await sleep(140);
+
+  // ---- Phase 3: flash (1 frame of full white) ----
+  process.stdout.write(`\x1b[${BANNER.length}A`);
+  process.stdout.write(flashFrame());
+  await sleep(70);
+
+  // ---- Phase 4: explosion (sparkles dissolve outward) ----
+  const explodeSteps = 6;
+  for (let s = 1; s <= explodeSteps; s++) {
+    process.stdout.write(`\x1b[${BANNER.length}A`);
+    process.stdout.write(explosionFrame(s / explodeSteps));
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(55);
+  }
+
+  // ---- Phase 5: collapse — clear the banner rows ----
+  // Move up to the top of the banner, then erase each row
+  process.stdout.write(`\x1b[${BANNER.length}A`);
+  for (let i = 0; i < BANNER.length; i++) {
+    process.stdout.write('\x1b[2K\n');  // erase line + newline
+  }
+  // Move back up to the start of the now-blank banner block
+  process.stdout.write(`\x1b[${BANNER.length}A`);
+
+  // ---- Phase 6: compact logo fades in ----
+  process.stdout.write(compactLogo() + '\n');
+  // Reserve 5 blank lines so the final layout occupies similar vertical space
+  for (let i = 0; i < BANNER.length - 1; i++) process.stdout.write('\n');
+  // Move cursor back up so the next prints go right after the compact logo
+  process.stdout.write(`\x1b[${BANNER.length - 1}A`);
+
+  // Restore cursor
+  process.stdout.write('\x1b[?25h');
+
+  // Disclaimer — two lines (red headline + muted detail)
+  process.stdout.write(`\n  ${RED}⚠ Not affiliated with xAI or grok.${reset}\n`);
+  process.stdout.write(`  ${MUTED}Community benchmarking tool — for beta testing & research.${reset}\n`);
   process.stdout.write('\n');
 }
 
@@ -82,7 +242,7 @@ function rule() {
 // Make sure BENCH_ROOT exists (esp. on a fresh clone using the default .bench-data/)
 try { mkdirSync(ROOT, { recursive: true }); } catch {}
 
-printBanner();
+await printBanner();
 process.stdout.write(`${DIM}  BENCH_ROOT  ${reset}${ROOT}\n`);
 process.stdout.write(`${DIM}  mode        ${reset}${DEV ? `${WARN}dev (HMR)${reset}` : `${GOOD}production${reset}`}\n`);
 process.stdout.write('\n');
@@ -136,6 +296,8 @@ setTimeout(() => {
 
 // Clean shutdown
 function shutdown(signal) {
+  // Re-show cursor in case the boot animation was interrupted
+  if (COLOR) process.stdout.write('\x1b[?25h');
   console.log(`\n${signal} received, shutting down...`);
   try { proxy.close(); } catch {}
   try { bench.close(); } catch {}
