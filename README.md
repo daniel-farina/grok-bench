@@ -32,7 +32,7 @@ Open <http://127.0.0.1:7900>. One Node process, two listeners, no Python.
 
 `npm start` produces an animated ASCII-art banner (the GROK letters shimmer in, flash, and explode into sparkles before collapsing to a compact one-liner), then a clean status summary with all three URLs and the live readiness indicator:
 
-![Animated terminal banner on startup](docs/terminal-banner.png)
+<img width="821" height="580" alt="image" src="https://github.com/user-attachments/assets/0ae8791c-066e-4932-b13a-8693ff5a34c7" />
 
 ### The Runs view
 
