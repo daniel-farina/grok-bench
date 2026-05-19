@@ -162,13 +162,20 @@ function compactLogo() {
   return `  ${TEAL}▰${BLUE}▰${TEAL}▰${reset} ${bold}Grok Bench${reset} ${DIM}v${pkgVersion}${reset}`;
 }
 
+// Subtitle that goes directly under the figlet (matches the LOGO.txt layout)
+function bannerSubtitle() {
+  return `${MUTED}              ·  ${TEAL}${bold}Bench${reset}${MUTED}  ·  ${DIM}v${pkgVersion}${reset}`;
+}
+
 async function printBanner() {
   const animate = COLOR && process.stdout.isTTY && !process.env.NO_ANIMATE;
   if (!animate) {
-    // Static fallback: just print the compact form, no fanfare
-    process.stdout.write(compactLogo() + '\n\n');
+    // Static fallback: print the full banner + subtitle + disclaimer.
+    process.stdout.write(staticFrame());
+    process.stdout.write(bannerSubtitle() + '\n');
+    process.stdout.write('\n');
     process.stdout.write(`  ${RED}⚠ Not affiliated with xAI or grok.${reset}\n`);
-    process.stdout.write(`  ${MUTED}Community benchmarking tool — for beta testing & research.${reset}\n`);
+    process.stdout.write(`  ${MUTED}Community benchmarking tool, for beta testing and research.${reset}\n`);
     process.stdout.write('\n');
     return;
   }
@@ -209,28 +216,25 @@ async function printBanner() {
     await sleep(55);
   }
 
-  // ---- Phase 5: collapse — clear the banner rows ----
-  // Move up to the top of the banner, then erase each row
-  process.stdout.write(`\x1b[${BANNER.length}A`);
-  for (let i = 0; i < BANNER.length; i++) {
-    process.stdout.write('\x1b[2K\n');  // erase line + newline
+  // ---- Phase 5: reform (particles converge back into the letters) ----
+  for (let s = explodeSteps; s >= 1; s--) {
+    process.stdout.write(`\x1b[${BANNER.length}A`);
+    process.stdout.write(explosionFrame(s / explodeSteps));
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(50);
   }
-  // Move back up to the start of the now-blank banner block
-  process.stdout.write(`\x1b[${BANNER.length}A`);
 
-  // ---- Phase 6: compact logo fades in ----
-  process.stdout.write(compactLogo() + '\n');
-  // Reserve 5 blank lines so the final layout occupies similar vertical space
-  for (let i = 0; i < BANNER.length - 1; i++) process.stdout.write('\n');
-  // Move cursor back up so the next prints go right after the compact logo
-  process.stdout.write(`\x1b[${BANNER.length - 1}A`);
+  // ---- Phase 6: settle back to the original banner + subtitle ----
+  process.stdout.write(`\x1b[${BANNER.length}A`);
+  process.stdout.write(staticFrame());
+  process.stdout.write(bannerSubtitle() + '\n');
 
   // Restore cursor
   process.stdout.write('\x1b[?25h');
 
-  // Disclaimer — two lines (red headline + muted detail)
+  // Disclaimer below the banner. Red headline + muted detail.
   process.stdout.write(`\n  ${RED}⚠ Not affiliated with xAI or grok.${reset}\n`);
-  process.stdout.write(`  ${MUTED}Community benchmarking tool — for beta testing & research.${reset}\n`);
+  process.stdout.write(`  ${MUTED}Community benchmarking tool, for beta testing and research.${reset}\n`);
   process.stdout.write('\n');
 }
 

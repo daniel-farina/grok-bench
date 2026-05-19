@@ -1,5 +1,15 @@
 # grok-bench
 
+```
+   ██████╗ ██████╗  ██████╗ ██╗  ██╗
+  ██╔════╝ ██╔══██╗██╔═══██╗██║ ██╔╝
+  ██║  ███╗██████╔╝██║   ██║█████╔╝
+  ██║   ██║██╔══██╗██║   ██║██╔═██╗
+  ╚██████╔╝██║  ██║╚██████╔╝██║  ██╗
+   ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝
+              ·  Bench  ·
+```
+
 A test bench for the **Grok CLI** (`grok` / `grok-build`). Lets you A/B different prompts and generation settings, captures every API call with full token & cost metrics, and gives you a live dashboard to compare runs.
 
 Built for one thing: figuring out what settings make Grok produce more elaborate code (games, simulators, complex apps) versus more conservative output.

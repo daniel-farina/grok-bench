@@ -11,9 +11,9 @@ async function loadState() {
   $('temperature').value = state.settings?.temperature ?? 0.5;
   $('max-tokens').value = String(state.settings?.max_completion_tokens ?? '16384');
   $('max-turns').value = state.settings?.max_turns ?? 60;
-  $('effort').value = state.settings?.effort ?? 'medium';
   $('use-proxy').checked = !!state.use_proxy;
   $('strip-reminders').checked = !!state.strip_reminders;
+  applyRevealVisibility();
   $('proxy-dot').classList.toggle('on', !!state.proxy_alive);
   $('proxy-state').textContent = state.proxy_alive ? 'alive' : 'offline';
 }
@@ -29,7 +29,6 @@ function gatherState() {
       temperature: parseFloat($('temperature').value) || 0.5,
       max_completion_tokens: $('max-tokens').value,
       max_turns: parseInt($('max-turns').value) || 60,
-      effort: $('effort').value || 'medium',
     },
   };
 }
@@ -311,7 +310,7 @@ function updateRowCells(tr, r) {
     r.index_lines, r.api_calls, r.estimated_billed_tokens,
     r._mtime, r.prompt_variant, r.system_prompt,
     r.temperature, r.max_completion_tokens, r.max_turns,
-    snap.effort, snap.strip_reminders, snap.use_proxy,
+    snap.strip_reminders, snap.use_proxy,
     snap.custom_prompt_active, snap.custom_prompt_length,
     !!expansionState.get(r._folder),
     starred,
@@ -347,7 +346,6 @@ function updateRowCells(tr, r) {
   if (r.temperature != null) settingsChips.push(`<span class="rs-chip" title="temperature">t=${r.temperature}</span>`);
   if (r.max_completion_tokens != null) settingsChips.push(`<span class="rs-chip" title="max_completion_tokens">max=${shortNum(r.max_completion_tokens)}</span>`);
   if (r.max_turns != null) settingsChips.push(`<span class="rs-chip" title="max_turns">turns=${r.max_turns}</span>`);
-  if (snap.effort != null) settingsChips.push(`<span class="rs-chip" title="--reasoning-effort">effort=${snap.effort}</span>`);
   if (snap.strip_reminders != null) settingsChips.push(`<span class="rs-chip ${snap.strip_reminders ? 'rs-on' : 'rs-off'}" title="strip &lt;system-reminder&gt; (skill catalog)">strip ${snap.strip_reminders ? '✓' : '✗'}</span>`);
   if (snap.use_proxy != null) settingsChips.push(`<span class="rs-chip ${snap.use_proxy ? 'rs-on' : 'rs-off'}" title="route through rewriting proxy">proxy ${snap.use_proxy ? '✓' : '✗'}</span>`);
 
@@ -987,7 +985,6 @@ async function renderSettingsInto(folder, container) {
       ['temperature', snap.temperature ?? run.temperature],
       ['max_completion_tokens', snap.max_completion_tokens ?? run.max_completion_tokens],
       ['max_turns', snap.max_turns ?? run.max_turns],
-      ['--reasoning-effort', snap.effort ?? '(unknown — older run)'],
       ['', null],
       ['use_proxy', snap.use_proxy],
       ['strip_reminders', snap.strip_reminders],
@@ -1508,6 +1505,7 @@ async function applySections() {
   const activeCb = $('custom-prompt-active');
   const wasAlreadyActive = activeCb.checked;
   activeCb.checked = true;
+  applyRevealVisibility();
   await saveState();
   const totalRules = defaultPromptCache.sections.reduce((acc, s) => acc + s.rules.length, 0);
   const activeMsg = wasAlreadyActive
@@ -1539,16 +1537,34 @@ $('sections-none-btn').onclick = () => {
   renderSections();
 };
 
+// Progressive disclosure: only show a section's body when its parent toggle is on
+function applyRevealVisibility() {
+  const cpBody = document.getElementById('custom-prompt-body');
+  if (cpBody) cpBody.hidden = !$('custom-prompt-active').checked;
+  const pxOn = $('use-proxy').checked;
+  const pxBody = document.getElementById('proxy-body');
+  if (pxBody) pxBody.hidden = !pxOn;
+  // Show the OFF warning when proxy is off, the normal hint when on
+  const offW = document.getElementById('proxy-off-warning');
+  const onH  = document.getElementById('proxy-on-hint');
+  if (offW) offW.hidden = pxOn;
+  if (onH)  onH.hidden  = !pxOn;
+}
+// Toggle visibility whenever those parent checkboxes change (without saving twice)
+for (const id of ['custom-prompt-active', 'use-proxy']) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener('change', applyRevealVisibility);
+}
+
 $('run-btn').onclick = startRun;
 $('save-btn').onclick = saveState;
 
 // "Use Grok's defaults" — reset all generation/proxy knobs to grok's stock behavior.
 async function useGrokDefaults() {
-  if (!confirm('Reset all settings to grok defaults? (t=0.6, max_tokens unset, turns=60, effort off, proxy + strip off)')) return;
+  if (!confirm('Reset all settings to grok defaults? (t=0.6, max_tokens unset, turns=60, proxy + strip off)')) return;
   $('temperature').value = '0.6';
   $('max-tokens').value = 'default';
   $('max-turns').value = '60';
-  $('effort').value = 'off';
   $('use-proxy').checked = false;
   $('strip-reminders').checked = false;
   await saveState();
@@ -1577,6 +1593,115 @@ async function useGrokDefaultPrompt() {
 
 const resetBtn = $('reset-settings-btn'); if (resetBtn) resetBtn.onclick = useGrokDefaults;
 const defaultPromptBtn = $('use-default-prompt-btn'); if (defaultPromptBtn) defaultPromptBtn.onclick = useGrokDefaultPrompt;
+
+// ---------- Prompt history (History view) ----------
+async function loadHistory() {
+  const host = $('history-list');
+  if (!host) return;
+  host.innerHTML = '<div class="muted" style="padding: 8px;">loading…</div>';
+  try {
+    const r = await fetch('/api/prompt-history');
+    const d = await r.json();
+    const prompts = d.prompts || [];
+    if (!prompts.length) {
+      host.innerHTML = '<div class="empty">No prompts yet — fire a run from the Prompt view.</div>';
+      return;
+    }
+    host.innerHTML = '';
+    const head = document.createElement('div');
+    head.style.cssText = 'color: var(--text-muted); font-size: 11px; margin-bottom: 10px;';
+    const totalRuns = prompts.reduce((a, p) => a + p.count, 0);
+    head.textContent = `${prompts.length} unique prompts across ${totalRuns} runs`;
+    host.appendChild(head);
+
+    for (const p of prompts) {
+      const cost = (p.totals.cost_ticks || 0) / 1e9;
+      const card = document.createElement('div');
+      card.className = 'hist-card';
+      const safe = escapeHtml(p.text);
+      // Compact: show up to ~6 lines / 600 chars; details element to expand
+      const preview = p.text.length > 600 ? safe.slice(0, 600) + '…' : safe;
+      card.innerHTML = `
+        <div class="hist-head">
+          <div class="hist-meta">
+            <span class="hist-count">${p.count}× <span class="muted">run${p.count > 1 ? 's' : ''}</span></span>
+            <span class="muted">·</span>
+            <span class="muted">${fmtNum(p.totals.api_calls)} calls</span>
+            <span class="muted">·</span>
+            <span class="muted">${fmtNum(p.totals.total_tokens)} tokens</span>
+            <span class="muted">·</span>
+            <span class="muted">$${cost.toFixed(4)} total</span>
+            <span class="muted">·</span>
+            <span class="muted">${fmtAgo(p.latest_mtime)}</span>
+          </div>
+          <div class="hist-actions">
+            <button class="btn" data-action="hist-use" data-prompt-idx="${prompts.indexOf(p)}">Use</button>
+            <button class="btn secondary" data-action="hist-copy" data-prompt-idx="${prompts.indexOf(p)}">Copy</button>
+          </div>
+        </div>
+        <pre class="hist-text">${preview}</pre>
+        <details class="hist-runs">
+          <summary>${p.runs.length} run${p.runs.length > 1 ? 's' : ''} used this prompt</summary>
+          <div class="hist-runs-list"></div>
+        </details>
+      `;
+      // Stash the prompt text on the card so action handlers can reach it
+      card._promptText = p.text;
+      // Run list inside the details
+      const runsList = card.querySelector('.hist-runs-list');
+      for (const r of p.runs) {
+        const row = document.createElement('div');
+        row.className = 'hist-run-row';
+        const costR = (r.cost_ticks || 0) / 1e9;
+        row.innerHTML = `
+          <a href="#" data-action="hist-goto" data-folder="${r.folder}"><code>${escapeHtml(r.tag)}</code></a>
+          <span class="muted">${r._status || r.status || ''}</span>
+          <span class="muted">t=${r.temperature ?? '-'}</span>
+          <span class="muted">max=${r.max_completion_tokens ?? '-'}</span>
+          <span class="muted">${fmtNum(r.api_calls || 0)} calls</span>
+          <span class="muted">${fmtNum(r.total_tokens || 0)} tok</span>
+          <span class="muted">$${costR.toFixed(4)}</span>
+          <span class="muted">${fmtAgo(r.mtime)}</span>
+        `;
+        runsList.appendChild(row);
+      }
+      host.appendChild(card);
+    }
+
+    // Delegate click handler for Use/Copy/Goto buttons
+    host.addEventListener('click', (ev) => {
+      const a = ev.target.closest('[data-action]');
+      if (!a) return;
+      ev.preventDefault();
+      const action = a.dataset.action;
+      const card = a.closest('.hist-card');
+      if (action === 'hist-use' && card && card._promptText) {
+        $('user-prompt').value = card._promptText;
+        saveState();
+        setView('prompt');
+      } else if (action === 'hist-copy' && card && card._promptText) {
+        navigator.clipboard.writeText(card._promptText).then(() => {
+          a.textContent = '✓ copied';
+          setTimeout(() => { a.textContent = 'Copy'; }, 1200);
+        });
+      } else if (action === 'hist-goto' && a.dataset.folder) {
+        // Switch to Runs view and try to expand that row
+        setView('runs');
+        setTimeout(() => {
+          expansionState.set(a.dataset.folder, 'metrics');
+          loadRuns();
+          // After the table renders, scroll the row into view
+          setTimeout(() => {
+            const tr = findRowTr(a.dataset.folder);
+            if (tr) tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 200);
+        }, 50);
+      }
+    }, { once: true });
+  } catch (e) {
+    host.innerHTML = `<div style="color:var(--bad)">${e.message}</div>`;
+  }
+}
 
 // ---------- Grok user-config editor (Config view) ----------
 
@@ -2078,13 +2203,13 @@ for (const t of document.querySelectorAll('.gc-tab')) {
     debounceId = setTimeout(() => gcRenderControls(), 200);
   });
 }
-['user-prompt', 'custom-prompt', 'custom-prompt-active', 'temperature', 'max-tokens', 'max-turns', 'effort', 'use-proxy', 'strip-reminders'].forEach((id) => {
+['user-prompt', 'custom-prompt', 'custom-prompt-active', 'temperature', 'max-tokens', 'max-turns', 'use-proxy', 'strip-reminders'].forEach((id) => {
   $(id).addEventListener('change', saveState);
 });
 
 // ----- nav: view switching -----
 function setView(name) {
-  if (!['runs', 'prompt', 'config'].includes(name)) name = 'runs';
+  if (!['runs', 'prompt', 'history', 'config'].includes(name)) name = 'runs';
   for (const v of document.querySelectorAll('.view')) {
     v.hidden = !v.classList.contains('view-' + name);
   }
@@ -2092,8 +2217,9 @@ function setView(name) {
     b.classList.toggle('active', b.dataset.view === name);
   }
   try { localStorage.setItem('bench.view', name); } catch {}
-  // Auto-load the config when switching to it
+  // Auto-load on demand
   if (name === 'config' && typeof gcLoad === 'function') gcLoad();
+  if (name === 'history' && typeof loadHistory === 'function') loadHistory();
 }
 (function initNav() {
   for (const b of document.querySelectorAll('.nav-btn')) {

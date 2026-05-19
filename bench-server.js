@@ -34,8 +34,9 @@ const DEFAULT_STATE = {
     temperature: 0.5,
     max_completion_tokens: 16384,
     max_turns: 60,
-    use_proxy: false, // when true, run uses rewriting proxy at 18180
-    effort: 'medium', // CLI --effort: low / medium / high / xhigh / max / off
+    // Route grok through our proxy by default — without this the bench can't
+    // capture API traffic, token counts, cost, or apply prompt rewrites.
+    use_proxy: true,
   },
   user_prompt: 'Create a 3d airplane game with mountains, ocean, birds and trees.',
   custom_prompt: '',
@@ -463,16 +464,7 @@ trace_upload = false
     '--max-turns', String(state.settings.max_turns || 60),
     '--output-format', 'plain',
   ];
-  // grok-build is a reasoning model; --effort triggers `reasoningEffort` API param
-  // which grok-build rejects. Use --reasoning-effort instead. Valid values:
-  // none, minimal, low, medium, high, xhigh.
-  const eff = state.settings?.effort;
-  const valid = ['none','minimal','low','medium','high','xhigh'];
-  // Legacy mapping if the user's saved state still has 'max'
-  const mapped = (eff === 'max') ? 'xhigh' : (eff === 'off') ? null : eff;
-  if (mapped && valid.includes(mapped)) {
-    args.push('--reasoning-effort', mapped);
-  }
+  // (--reasoning-effort dropped — grok-build doesn't expose a usable reasoning-budget knob via CLI)
   const out = openSync(logPath, 'w');
   const child = spawn(grok, args, {
     cwd: workdir,
@@ -495,7 +487,6 @@ trace_upload = false
       temperature: state.settings.temperature,
       max_completion_tokens: state.settings.max_completion_tokens,
       max_turns: state.settings.max_turns,
-      effort: state.settings.effort,
       use_proxy: !!state.use_proxy,
       strip_reminders: !!state.strip_reminders,
       custom_prompt_active: !!state.custom_prompt_active,
@@ -511,11 +502,42 @@ trace_upload = false
     _pid: child.pid,
   }, null, 2));
 
-  // Background poller that updates metrics.json when child exits
+  // When grok exits: flip status running → done/failed directly in Node.
+  // Then (optionally) invoke finalize_run.py for the deeper session-event metrics
+  // — but only if the script is actually present alongside this server.
   child.on('exit', (code) => {
+    const metricsPath = path.join(workdir, 'metrics.json');
     setTimeout(() => {
-      const finalizer = spawn('python3', [path.join(ROOT, 'finalize_run.py'), workdir, String(code ?? -1)], { stdio: 'ignore' });
-      finalizer.unref();
+      try {
+        const m = JSON.parse(readFileSync(metricsPath, 'utf8'));
+        const startedAt = m.started_at ? Date.parse(m.started_at) : null;
+        m.exit_code = code;
+        m._status = (code === 0) ? 'done' : 'failed';
+        m.finished_at = new Date().toISOString();
+        if (startedAt) m.elapsed_seconds = Math.round((Date.now() - startedAt) / 1000);
+        // index_lines + has_index: count lines in any HTML/JS the model wrote
+        try {
+          const files = readdirSync(workdir).filter(f => /\.(html|js|css)$/i.test(f));
+          if (files.length) {
+            const main = files.find(f => f === 'index.html') || files[0];
+            const lines = readFileSync(path.join(workdir, main), 'utf8').split('\n').length;
+            m.index_lines = lines;
+            m.has_index = lines > 0;
+          }
+        } catch {}
+        writeFileSync(metricsPath, JSON.stringify(m, null, 2));
+      } catch (e) {
+        // metrics.json missing/corrupt — leave it
+      }
+      // Best-effort deeper finalize (optional; only if finalize_run.py is here)
+      const finalizeScript = path.join(__dirname, 'finalize_run.py');
+      if (existsSync(finalizeScript)) {
+        const finalizer = spawn('python3', [finalizeScript, workdir, String(code ?? -1)], {
+          stdio: 'ignore',
+          env: { ...process.env, BENCH_ROOT: ROOT },
+        });
+        finalizer.unref();
+      }
     }, 1500);
   });
 
@@ -875,6 +897,61 @@ const requestHandler = async (req, res) => {
       try { return JSON.parse(l); } catch { return null; }
     }).filter(Boolean);
     return json(res, rows.slice(-50).reverse());
+  }
+
+  // Prompt history: walk every bench_*/prompt.txt, group identical prompts,
+  // surface aggregate metrics so the user can see "this prompt was used N
+  // times, here's its cost / total tokens / latest run".
+  if (url.pathname === '/api/prompt-history') {
+    const groups = new Map(); // hashKey -> { text, count, runs[], totals }
+    let entries;
+    try { entries = readdirSync(ROOT, { withFileTypes: true }); }
+    catch { return json(res, { prompts: [] }); }
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      if (!ent.name.startsWith('bench_')) continue;
+      const promptPath = path.join(ROOT, ent.name, 'prompt.txt');
+      const metricsPath = path.join(ROOT, ent.name, 'metrics.json');
+      if (!existsSync(promptPath)) continue;
+      let promptText;
+      try { promptText = readFileSync(promptPath, 'utf8'); } catch { continue; }
+      promptText = promptText.replace(/\s+$/, '');
+      if (!promptText) continue;
+      let m = {};
+      try { m = JSON.parse(readFileSync(metricsPath, 'utf8')); } catch {}
+      const agg = aggregateRunMetrics(ent.name);
+      const key = promptText; // exact-match grouping
+      let g = groups.get(key);
+      if (!g) {
+        g = { text: promptText, count: 0, runs: [], totals: { cost_ticks: 0, total_tokens: 0, api_calls: 0 } };
+        groups.set(key, g);
+      }
+      g.count++;
+      const mtime = (() => { try { return statSync(metricsPath).mtimeMs; } catch { return 0; } })();
+      g.runs.push({
+        folder: ent.name,
+        tag: m.tag || ent.name,
+        started_at: m.started_at,
+        status: m._status,
+        temperature: m.temperature,
+        max_completion_tokens: m.max_completion_tokens,
+        max_turns: m.max_turns,
+        cost_ticks: agg.sum_cost_ticks,
+        total_tokens: agg.sum_total_tokens,
+        api_calls: agg.api_calls,
+        mtime,
+      });
+      g.totals.cost_ticks += agg.sum_cost_ticks;
+      g.totals.total_tokens += agg.sum_total_tokens;
+      g.totals.api_calls += agg.api_calls;
+    }
+    // Newest-first per group, then groups sorted by latest mtime
+    const prompts = [...groups.values()].map(g => {
+      g.runs.sort((a, b) => b.mtime - a.mtime);
+      g.latest_mtime = g.runs[0]?.mtime || 0;
+      return g;
+    }).sort((a, b) => b.latest_mtime - a.latest_mtime);
+    return json(res, { prompts });
   }
 
   // Static-file fallback for the built bench-ui (bench-ui/dist/)

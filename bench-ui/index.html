@@ -22,17 +22,21 @@
     <aside class="navbar" id="navbar">
       <button class="nav-collapse" id="nav-collapse" type="button" title="collapse sidebar" aria-label="collapse sidebar">«</button>
       <nav class="nav-list">
-        <button class="nav-btn" data-view="runs" title="all runs + metrics + charts">
-          <span class="nav-icon">⊞</span>
-          <span class="nav-label">Runs</span>
-        </button>
-        <button class="nav-btn" data-view="prompt" title="prompt + settings + run">
+        <button class="nav-btn" data-view="prompt" title="compose a prompt + tweak settings + fire a run">
           <span class="nav-icon">✍</span>
-          <span class="nav-label">Prompt</span>
+          <span class="nav-label">Compose</span>
+        </button>
+        <button class="nav-btn" data-view="runs" title="past runs + metrics + charts">
+          <span class="nav-icon">📊</span>
+          <span class="nav-label">Results</span>
+        </button>
+        <button class="nav-btn" data-view="history" title="every prompt you've ever run, grouped">
+          <span class="nav-icon">📑</span>
+          <span class="nav-label">Prompts</span>
         </button>
         <button class="nav-btn" data-view="config" title="~/.grok/config.toml editor with diff and revision history">
           <span class="nav-icon">⚙</span>
-          <span class="nav-label">Config</span>
+          <span class="nav-label">Settings</span>
         </button>
       </nav>
       <div class="nav-bottom">
@@ -93,32 +97,36 @@
           <span>Use custom system prompt (via rewriting proxy)</span>
         </label>
         <div class="hint">Replaces grok's default 12k system prompt on every <code>/v1/responses</code> call.</div>
-        <div class="actions" style="margin-top: 6px;">
-          <button class="btn secondary" id="load-default-btn" type="button">Load grok's default…</button>
-          <button class="btn secondary" id="show-sections-btn" type="button">Toggle sections…</button>
-          <button class="btn secondary" id="use-default-prompt-btn" type="button" title="Turn off the custom system prompt — let grok use its built-in 12K">↺ Use Grok's default prompt</button>
-        </div>
-        <div id="sections-panel" style="display:none; margin-top: 10px; background: var(--bg-2); border:1px solid var(--border); border-radius: 6px; padding: 10px;">
-          <div class="hint" style="margin-bottom: 8px;">Uncheck a section to remove it from grok's default prompt. Then click "Apply" to write the trimmed prompt into the textarea below.</div>
-          <div id="sections-list"></div>
-          <div class="actions" style="margin-top: 8px;">
-            <button class="btn" id="sections-apply-btn" type="button">Apply selected → custom prompt</button>
-            <button class="btn secondary" id="sections-all-btn" type="button">All</button>
-            <button class="btn secondary" id="sections-none-btn" type="button">None</button>
+        <div id="custom-prompt-body" class="reveal-body" hidden>
+          <div class="actions" style="margin-top: 6px;">
+            <button class="btn secondary" id="load-default-btn" type="button">Load grok's default…</button>
+            <button class="btn secondary" id="show-sections-btn" type="button">Toggle sections…</button>
+            <button class="btn secondary" id="use-default-prompt-btn" type="button" title="Turn off the custom system prompt — let grok use its built-in 12K">↺ Use Grok's default prompt</button>
           </div>
-        </div>
-        <div class="field" style="margin-top: 10px;">
-          <textarea id="custom-prompt" rows="14" placeholder="Paste your custom system prompt here..."></textarea>
+          <div id="sections-panel" style="display:none; margin-top: 10px; background: var(--bg-2); border:1px solid var(--border); border-radius: 6px; padding: 10px;">
+            <div class="hint" style="margin-bottom: 8px;">Uncheck a section to remove it from grok's default prompt. Then click "Apply" to write the trimmed prompt into the textarea below.</div>
+            <div id="sections-list"></div>
+            <div class="actions" style="margin-top: 8px;">
+              <button class="btn" id="sections-apply-btn" type="button">Apply selected → custom prompt</button>
+              <button class="btn secondary" id="sections-all-btn" type="button">All</button>
+              <button class="btn secondary" id="sections-none-btn" type="button">None</button>
+            </div>
+          </div>
+          <div class="field" style="margin-top: 10px;">
+            <textarea id="custom-prompt" rows="14" placeholder="Paste your custom system prompt here..."></textarea>
+          </div>
         </div>
       </section>
 
       <section>
         <h2>Generation settings</h2>
-        <div class="field">
-          <label>Temperature</label>
-          <input type="number" id="temperature" step="0.1" min="0" max="2" />
-        </div>
-        <div class="row2">
+
+        <div class="settings-grid">
+          <div class="field">
+            <label>Temperature</label>
+            <input type="number" id="temperature" step="0.1" min="0" max="2" />
+            <div class="field-hint">Higher = more variation. 0–2.</div>
+          </div>
           <div class="field">
             <label>max_completion_tokens</label>
             <select id="max-tokens">
@@ -134,45 +142,50 @@
               <option value="131072">131072 (128K)</option>
               <option value="262144">262144 (256K)</option>
             </select>
+            <div class="field-hint">Cap on tokens per API response.</div>
           </div>
           <div class="field">
             <label>max_turns</label>
             <input type="number" id="max-turns" min="5" max="500" />
+            <div class="field-hint">Agent-loop message cap.</div>
           </div>
         </div>
-        <div class="row2">
-          <div class="field">
-            <label>--reasoning-effort</label>
-            <select id="effort">
-              <option value="off">off (no flag)</option>
-              <option value="none">none</option>
-              <option value="minimal">minimal</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="xhigh">xhigh</option>
-            </select>
-          </div>
-          <div class="field"></div>
-        </div>
-        <div class="hint">grok-build is a reasoning model — uses <code>--reasoning-effort</code> (not <code>--effort</code>).</div>
       </section>
 
       <section>
         <h2>Proxy</h2>
         <label class="toggle">
-          <input type="checkbox" id="use-proxy" />
+          <input type="checkbox" id="use-proxy" checked />
           <span>Force inference through proxy</span>
         </label>
-        <label class="toggle" style="margin-top: 6px;">
-          <input type="checkbox" id="strip-reminders" />
-          <span>Strip &lt;system-reminder&gt; injections (skill catalog)</span>
-        </label>
-        <div class="hint">Drops the auto-injected skills list (~4.8KB of xlsx/pptx/docx/etc.) and any other <code>&lt;system-reminder&gt;</code> user messages before they hit the model. Requires proxy.</div>
+        <div class="hint" id="proxy-off-warning" hidden style="color: var(--warn);">
+          ⚠ Proxy disabled — runs will fire but the bench will <strong>not capture</strong>
+          API calls, tokens, cost, or apply system-prompt rewrites. Only run.log and any
+          files grok writes will show up.
+        </div>
+        <div class="hint" id="proxy-on-hint">
+          Bench writes <code>base_url = http://127.0.0.1:18180/v1</code> into grok's config
+          for this run. Lets the bench capture every API call.
+        </div>
+        <div id="proxy-body" class="reveal-body" hidden>
+          <label class="toggle" style="margin-top: 8px;">
+            <input type="checkbox" id="strip-reminders" />
+            <span>Strip &lt;system-reminder&gt; injections (skill catalog)</span>
+          </label>
+          <div class="hint">Drops the auto-injected skills list (~4.8KB of xlsx/pptx/docx/etc.) and any other <code>&lt;system-reminder&gt;</code> user messages before they hit the model.</div>
+        </div>
         <div class="actions" style="margin-top: 10px;">
           <button class="btn secondary" id="reset-settings-btn" title="Reset all knobs to grok's stock behavior — no proxy, no overrides">↺ Use Grok's defaults</button>
         </div>
-        <div class="hint" style="margin-top: 6px;">Resets to: t=0.6, max_tokens unset, max_turns=60, --reasoning-effort off, proxy off, strip-reminders off.</div>
+        <div class="hint" style="margin-top: 6px;">Resets to: t=0.6, max_tokens unset, max_turns=60, proxy off, strip-reminders off.</div>
+      </section>
+    </section>
+
+    <section class="panel view view-history" hidden>
+      <section>
+        <h2>Prompts</h2>
+        <div class="hint" style="margin-bottom: 10px;">Every prompt you've ever sent through the bench, grouped. Click <strong>Use</strong> to load it into the Compose page.</div>
+        <div id="history-list"></div>
       </section>
     </section>
 
