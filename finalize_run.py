@@ -85,8 +85,3 @@ if sess_path:
     m['estimated_billed_tokens'] = sum(per_stream.values())
 
 m_path.write_text(json.dumps(m, indent=2))
-
-# Refresh the legacy static dashboard if build_index.py is present alongside us
-build_index = pathlib.Path(__file__).resolve().parent / 'build_index.py'
-if build_index.exists():
-    os.system(f'python3 {build_index} >/dev/null 2>&1')
