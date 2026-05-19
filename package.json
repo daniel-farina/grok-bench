@@ -1,0 +1,48 @@
+{
+  "name": "grok-bench",
+  "version": "0.2.0",
+  "description": "A test bench for tuning Grok CLI generation settings. Single Node command runs the rewriting proxy, the bench API, and the dashboard.",
+  "type": "module",
+  "main": "start.js",
+  "bin": {
+    "grok-bench": "./start.js"
+  },
+  "scripts": {
+    "start": "node start.js",
+    "dev":   "node start.js --dev",
+    "build": "cd bench-ui && npm install && npm run build",
+    "ui:dev": "cd bench-ui && npm run dev"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/daniel-farina/grok-bench.git"
+  },
+  "homepage": "https://github.com/daniel-farina/grok-bench",
+  "author": "Daniel Farina <https://x.com/daniel_farinax>",
+  "files": [
+    "start.js",
+    "proxy.js",
+    "bench-server.js",
+    "finalize_run.py",
+    "grok_default_system_prompt.txt",
+    "bench-ui/dist/",
+    "bench-ui/package.json",
+    "bench-ui/index.html",
+    "bench-ui/vite.config.js",
+    "bench-ui/src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "grok",
+    "xai",
+    "llm",
+    "prompt-engineering",
+    "benchmarking",
+    "dashboard"
+  ]
+}

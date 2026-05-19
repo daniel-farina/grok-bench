@@ -1,35 +1,19 @@
-# --- runtime state (created by the bench at run time) ---
-bench-state.json
-.current_run_tag
-.port
-.strip_reminders
-custom_system_prompt.txt
-custom_system_prompt.txt.inactive
-bench_user_prompt.txt
+# All runtime state (run outputs, captures, sessions, grokhome, logs, state)
+# lives under this single hidden dir so the source tree stays clean.
+.bench-data/
 
-# --- run outputs (one folder per Run-test click) ---
-bench_*/
+# Per-machine GROK_BIN override (if any)
+.env
+.env.local
 
-# --- grok install state (auth.json + sessions live here when GROK_HOME points
-# at this repo's `grokhome/` — must never be committed) ---
-grokhome/
-
-# --- logs / captures ---
-*.log
-proxy_rewrite_logs/
-
-# --- legacy artifact (build_index.py output, optional) ---
-index.html
-!bench-ui/index.html
-
-# --- node / vite ---
+# node / vite
 node_modules/
 bench-ui/dist/
 
-# --- python ---
+# python
 __pycache__/
 *.pyc
 
-# --- editor / OS ---
+# editor / OS
 .DS_Store
 *.swp

@@ -17,15 +17,17 @@ import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = __dirname;
-const STATE_FILE = path.join(ROOT, 'bench-state.json');
-const CUSTOM_PROMPT_FILE = path.join(ROOT, 'custom_system_prompt.txt');
-const CUSTOM_PROMPT_INACTIVE = path.join(ROOT, 'custom_system_prompt.txt.inactive');
-const USER_PROMPT_FILE = path.join(ROOT, 'bench_user_prompt.txt');
-const STRIP_REMINDERS_MARKER = path.join(ROOT, '.strip_reminders');
-const PROXY_LOGS = path.join(ROOT, 'proxy_rewrite_logs');
-const PORT = 7900;
-const PROXY_PORT = 18180;
+// ROOT is resolved at server-start time so start.js / start({root}) can override
+let ROOT = path.resolve(process.env.BENCH_ROOT || __dirname);
+let STATE_FILE = path.join(ROOT, 'bench-state.json');
+let CUSTOM_PROMPT_FILE = path.join(ROOT, 'custom_system_prompt.txt');
+let CUSTOM_PROMPT_INACTIVE = path.join(ROOT, 'custom_system_prompt.txt.inactive');
+let USER_PROMPT_FILE = path.join(ROOT, 'bench_user_prompt.txt');
+let STRIP_REMINDERS_MARKER = path.join(ROOT, '.strip_reminders');
+let PROXY_LOGS = path.join(ROOT, 'proxy_rewrite_logs');
+let PORT = parseInt(process.env.BENCH_PORT || '7900', 10);
+let PROXY_PORT = parseInt(process.env.PROXY_PORT || '18180', 10);
+let UI_DIST_DIR = path.join(__dirname, 'bench-ui', 'dist');
 
 const DEFAULT_STATE = {
   settings: {
@@ -41,7 +43,57 @@ const DEFAULT_STATE = {
   strip_reminders: false,
 };
 
-const DEFAULT_PROMPT_FILE = path.join(ROOT, 'grok_default_system_prompt.txt');
+// Versioned reference prompts directory (prompts/grok-<version>.txt).
+// resolveDefaultPromptFile() picks the file matching the installed grok version,
+// or falls back to the highest version present.
+const PROMPTS_DIR = path.join(__dirname, 'prompts');
+
+let _grokVersion = null;
+function detectGrokVersion() {
+  if (_grokVersion !== null) return _grokVersion;
+  const bin = process.env.GROK_BIN || path.join(process.env.HOME || '', '.grok/bin/grok');
+  try {
+    const { spawnSync } = require_spawnSync();
+    const r = spawnSync(bin, ['--version'], { encoding: 'utf8' });
+    const m = (r.stdout || '').match(/(\d+\.\d+\.\d+)/);
+    _grokVersion = m ? m[1] : '';
+  } catch { _grokVersion = ''; }
+  return _grokVersion;
+}
+// helper: pull spawnSync at use-time so the import order is happy at top of file
+function require_spawnSync() {
+  // child_process is already imported as { spawn } — re-import spawnSync here
+  // through dynamic require-equivalent (we're in ESM but can use the same module).
+  // eslint-disable-next-line no-undef
+  return { spawnSync: childProcessSpawnSync };
+}
+import { spawnSync as childProcessSpawnSync } from 'node:child_process';
+
+function resolveDefaultPromptFile() {
+  if (!existsSync(PROMPTS_DIR)) return { file: null, version: null, available: [] };
+  let files;
+  try {
+    files = readdirSync(PROMPTS_DIR).filter(f => /^grok-[\d.]+\.txt$/.test(f));
+  } catch { return { file: null, version: null, available: [] }; }
+  if (!files.length) return { file: null, version: null, available: [] };
+  const available = files.map(f => f.replace(/^grok-|\.txt$/g, ''))
+    .sort((a, b) => cmpSemverLike(b, a));   // newest first
+  const installed = detectGrokVersion();
+  if (installed && available.includes(installed)) {
+    return { file: path.join(PROMPTS_DIR, `grok-${installed}.txt`), version: installed, available, matched: true };
+  }
+  const fallback = available[0];
+  return { file: path.join(PROMPTS_DIR, `grok-${fallback}.txt`), version: fallback, available, matched: false, installed };
+}
+function cmpSemverLike(a, b) {
+  const pa = a.split('.').map(n => parseInt(n, 10) || 0);
+  const pb = b.split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d;
+  }
+  return 0;
+}
 
 function loadState() {
   if (!existsSync(STATE_FILE)) return structuredClone(DEFAULT_STATE);
@@ -470,7 +522,7 @@ trace_upload = false
   return { tag, pid: child.pid };
 }
 
-const server = http.createServer(async (req, res) => {
+const requestHandler = async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
   // CORS for any /api calls if needed
@@ -483,21 +535,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
-  // Static index
-  if (url.pathname === '/' || url.pathname === '/bench.html') {
-    const p = path.join(ROOT, 'bench.html');
-    if (existsSync(p)) {
-      res.writeHead(200, {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-store, no-cache, must-revalidate',
-        'Pragma': 'no-cache',
-      });
-      createReadStream(p).pipe(res);
-    } else {
-      plain(res, 'bench.html not found', 404);
-    }
-    return;
-  }
+  // (static-file fallback for the built UI is at the bottom)
 
   if (url.pathname === '/api/state' && req.method === 'GET') {
     const state = loadState();
@@ -798,21 +836,31 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true, path: folder });
   }
 
-  // Grok's default system prompt (captured once into a sibling file)
+  // Grok's default system prompt (versioned reference, picks file matching
+  // the installed grok binary; falls back to the highest available version)
   if (url.pathname === '/api/grok-default-prompt') {
-    if (!existsSync(DEFAULT_PROMPT_FILE)) {
-      return json(res, { error: 'default prompt not captured yet. run a passthrough call through the proxy first.' }, 404);
+    const resolved = resolveDefaultPromptFile();
+    if (!resolved.file) {
+      return json(res, { error: 'no versioned prompt files found in ./prompts/', available: [] }, 404);
     }
-    const text = readFileSync(DEFAULT_PROMPT_FILE, 'utf8');
+    const text = readFileSync(resolved.file, 'utf8');
     const sections = parsePromptSections(text);
-    return json(res, { text, length: text.length, sections });
+    return json(res, {
+      text, length: text.length, sections,
+      version: resolved.version,
+      installed_grok_version: detectGrokVersion(),
+      matched: !!resolved.matched,
+      available_versions: resolved.available,
+      file: path.basename(resolved.file),
+    });
   }
 
   if (url.pathname === '/api/grok-default-prompt/assemble' && req.method === 'POST') {
     try {
       const { include } = await readJson(req); // array of section names to KEEP
-      if (!existsSync(DEFAULT_PROMPT_FILE)) return json(res, { error: 'no default prompt on file' }, 404);
-      const text = readFileSync(DEFAULT_PROMPT_FILE, 'utf8');
+      const resolved = resolveDefaultPromptFile();
+      if (!resolved.file) return json(res, { error: 'no versioned prompt files' }, 404);
+      const text = readFileSync(resolved.file, 'utf8');
       const out = assemblePromptFromSections(text, include || []);
       return json(res, { text: out, length: out.length });
     } catch (e) {
@@ -829,10 +877,89 @@ const server = http.createServer(async (req, res) => {
     return json(res, rows.slice(-50).reverse());
   }
 
-  plain(res, 'not found', 404);
-});
+  // Static-file fallback for the built bench-ui (bench-ui/dist/)
+  // Any GET that hasn't matched an /api/* route is treated as a UI asset.
+  if (req.method === 'GET' && existsSync(UI_DIST_DIR)) {
+    let rel = decodeURIComponent(url.pathname);
+    if (rel === '/' || rel === '') rel = '/index.html';
+    // Strip the leading slash so path.join doesn't treat it as absolute
+    rel = rel.replace(/^\/+/, '');
+    const target = path.resolve(path.join(UI_DIST_DIR, rel));
+    // Prevent escape from the dist dir
+    if (target === UI_DIST_DIR || target.startsWith(UI_DIST_DIR + path.sep)) {
+      // If the resolved path is a directory, look for its index.html
+      let toServe = target;
+      try {
+        const st = statSync(toServe);
+        if (st.isDirectory()) toServe = path.join(toServe, 'index.html');
+      } catch { /* ENOENT below */ }
+      if (existsSync(toServe)) {
+        const ext = path.extname(toServe).toLowerCase();
+        const mime = {
+          '.html': 'text/html; charset=utf-8',
+          '.js':   'application/javascript; charset=utf-8',
+          '.mjs':  'application/javascript; charset=utf-8',
+          '.css':  'text/css; charset=utf-8',
+          '.json': 'application/json; charset=utf-8',
+          '.svg':  'image/svg+xml',
+          '.png':  'image/png',
+          '.jpg':  'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.gif':  'image/gif',
+          '.ico':  'image/x-icon',
+          '.webp': 'image/webp',
+          '.woff': 'font/woff',
+          '.woff2':'font/woff2',
+          '.map':  'application/json; charset=utf-8',
+          '.txt':  'text/plain; charset=utf-8',
+        }[ext] || 'application/octet-stream';
+        res.writeHead(200, {
+          'Content-Type': mime,
+          // No long-cache during dev; rebuilds replace files in place
+          'Cache-Control': 'no-cache',
+        });
+        createReadStream(toServe).pipe(res);
+        return;
+      }
+    }
+  }
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`bench listening on http://127.0.0.1:${PORT}`);
-  console.log(`root: ${ROOT}`);
-});
+  plain(res, 'not found', 404);
+};
+
+// Public API: start({ port, root, proxyPort, uiDistDir, quiet })
+// Returns the http.Server instance.
+export function start({ port, root, proxyPort, uiDistDir, quiet = false } = {}) {
+  if (root) {
+    ROOT = path.resolve(root);
+    STATE_FILE = path.join(ROOT, 'bench-state.json');
+    CUSTOM_PROMPT_FILE = path.join(ROOT, 'custom_system_prompt.txt');
+    CUSTOM_PROMPT_INACTIVE = path.join(ROOT, 'custom_system_prompt.txt.inactive');
+    USER_PROMPT_FILE = path.join(ROOT, 'bench_user_prompt.txt');
+    STRIP_REMINDERS_MARKER = path.join(ROOT, '.strip_reminders');
+    PROXY_LOGS = path.join(ROOT, 'proxy_rewrite_logs');
+  }
+  if (port != null) PORT = port;
+  if (proxyPort != null) PROXY_PORT = proxyPort;
+  if (uiDistDir) UI_DIST_DIR = path.resolve(uiDistDir);
+
+  const server = http.createServer(requestHandler);
+  server.listen(PORT, '127.0.0.1', () => {
+    if (quiet) return;
+    console.log(`[bench-server] listening on http://127.0.0.1:${PORT}`);
+    console.log(`  root: ${ROOT}`);
+    if (existsSync(UI_DIST_DIR)) {
+      console.log(`  ui:   ${UI_DIST_DIR} (open http://127.0.0.1:${PORT}/)`);
+    } else {
+      console.log(`  ui:   (no dist build — run 'npm run build' to enable in-process UI)`);
+    }
+  });
+  return server;
+}
+
+// Direct-invoke: `node bench-server.js`
+const isDirect = import.meta.url === `file://${process.argv[1]}` ||
+                 import.meta.url === `file://${path.resolve(process.argv[1] || '')}`;
+if (isDirect) {
+  start();
+}
